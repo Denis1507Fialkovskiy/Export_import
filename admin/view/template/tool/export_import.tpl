@@ -98,6 +98,19 @@
 									</td>
 								</tr>
 
+								<tr id="category_filter">
+									<td style="vertical-align:top;"><?php echo $entry_category_filter; ?><span class="help"><?php echo $help_category_filter; ?></span><br />
+										<input type="text" name="category" value="" placeholder="<?php echo $entry_category; ?>" id="input-category" class="form-control" />
+										<div id="categories" class="well well-sm" style="height: 100px; overflow: auto;"> 
+											<?php foreach ($categories as $category) { ?>
+											<div id="category<?php echo $category['category_id']; ?>"><i class="fa fa-minus-circle"></i> <?php echo $category['name']; ?>
+												<input type="hidden" name="categories[]" value="<?php echo $category['category_id']; ?>" />
+											</div>
+											<?php } ?>
+										</div>
+									</td>
+								</tr>
+
 								<tr id="range_type">
 									<td style="vertical-align:top;"><?php echo $entry_range_type; ?><span class="help"><?php echo $help_range_type; ?></span><br />
 										<input type="radio" name="range_type" value="id" id="range_type_id"><?php echo $button_export_id; ?> &nbsp;&nbsp;
@@ -297,6 +310,14 @@ function getNotifications() {
 	);
 }
 
+function check_category_filter(export_type) {
+	if (export_type=='p') {
+		$('#category_filter').show();
+	} else {
+		$('#category_filter').hide();
+	}
+}
+
 function check_range_type(export_type) {
 	if ((export_type=='p') || (export_type=='c') || (export_type=='u')) {
 		$('#range_type').show();
@@ -311,6 +332,7 @@ function check_range_type(export_type) {
 
 $(document).ready(function() {
 
+	check_category_filter($('input[name=export_type]:checked').val());
 	check_range_type($('input[name=export_type]:checked').val());
 
 	$("#range_type_id").click(function() {
@@ -324,6 +346,7 @@ $(document).ready(function() {
 	});
 
 	$('input[name=export_type]').click(function() {
+		check_category_filter($(this).val());
 		check_range_type($(this).val());
 	});
 
@@ -395,6 +418,27 @@ function isNumber(txt){
 	return regExp.test(txt); 
 }
 
+count_product = <?php echo $count_product; ?>;
+
+function updateCountProducts() {
+	$.ajax({
+		url: 'index.php?route=tool/export_import/getCountProduct&token=<?php echo $token; ?>',
+		type: 'post',
+		dataType: 'json',
+		data: $("input[name='categories[]']").serialize(),
+		success: function(json) {
+			if (json['count']) {
+				count_product = json['count'];
+			} else {
+			}
+			console.log("success: count_product='"+count_product+"'");
+		},
+		error: function(xhr, ajaxOptions, thrownError) {
+			alert(thrownError + "\r\n" + xhr.statusText + "\r\n" + xhr.responseText);
+		}
+	});
+}
+
 function validateExportForm(id) {
 	var export_type = $('input[name=export_type]:checked').val();
 	if ((export_type!='c') && (export_type!='p') && (export_type!='u')) {
@@ -416,7 +460,7 @@ function validateExportForm(id) {
 
 	var count_item;
 	switch (export_type) {
-		case 'p': count_item = <?php echo $count_product-1; ?>;  break;
+		case 'p': count_item = count_product-1;  break;
 		case 'c': count_item = <?php echo $count_category-1; ?>; break;
 		default:  count_item = <?php echo $count_customer-1; ?>; break;
 	}
@@ -469,6 +513,35 @@ function downloadData() {
 function updateSettings() {
 	$('#settings').submit();
 }
+
+// Category
+$('input[name=\'category\']').autocomplete({
+	'source': function(request, response) {
+		$.ajax({
+			url: 'index.php?route=catalog/category/autocomplete&token=<?php echo $token; ?>&limit=15&filter_name=' +  encodeURIComponent(request),
+			dataType: 'json',
+			success: function(json) {
+				response($.map(json, function(item) {
+					return {
+						label: item['name'],
+						value: item['category_id']
+					}
+				}));
+			}
+		});
+	},
+	'select': function(item) {
+		$('input[name=\'category\']').val('');
+		$('#category' + item['value']).remove();
+		$('#categories').append('<div id="category' + item['value'] + '"><i class="fa fa-minus-circle"></i> ' + item['label'] + '<input type="hidden" name="categories[]" value="' + item['value'] + '" /></div>');
+		updateCountProducts();
+	}
+});
+
+$('#categories').delegate('.fa-minus-circle', 'click', function() {
+	$(this).parent().remove();
+	updateCountProducts();
+});
 //--></script>
 
 </div>
