@@ -38,14 +38,15 @@ function error_handler_for_export_import($errno, $errstr, $errfile, $errline) {
 		return true;
 	}
 
-	if (($errors != "Fatal Error") && isset($request->get['route']) && ($request->get['route']!='tool/export_import/download'))  {
+	$dir = version_compare(VERSION,'3.0','>=') ? 'extension' : 'tool';
+	if (($errors != "Fatal Error") && isset($request->get['route']) && ($request->get['route']!="$dir/export_import/download"))  {
 		if ($config->get('config_error_display')) {
 			echo '<b>' . $errors . '</b>: ' . $errstr . ' in <b>' . $errfile . '</b> on line <b>' . $errline . '</b>';
 		}
 	} else {
 		$session->data['export_import_error'] = array( 'errstr'=>$errstr, 'errno'=>$errno, 'errfile'=>$errfile, 'errline'=>$errline );
-		$token = $request->get['token'];
-		$link = $url->link( 'tool/export_import', 'token='.$token, 'SSL' );
+		$token = version_compare(VERSION,'3.0','>=') ? $request->get['user_token'] : $request->get['token'];
+		$link = $url->link( "$dir/export_import", version_compare(VERSION,'3.0','>=') ? 'user_token='.$token : 'token='.$token, true );
 		header('Status: ' . 302);
 		header('Location: ' . str_replace(array('&amp;', "\n", "\r"), array('&', '', ''), $link));
 		exit();
@@ -69,6 +70,15 @@ class ModelToolExportImport extends Model {
 
 	private $error = array();
 	protected $null_array = array();
+	protected $use_table_seo_url = false;
+	protected $posted_categories = '';
+
+
+	public function __construct( $registry ) {
+		parent::__construct( $registry );
+		$this->use_table_seo_url = version_compare(VERSION,'3.0','>=') ? true : false;
+	}
+
 
 	protected function clean( &$str, $allowBlanks=false ) {
 		$result = "";
@@ -345,6 +355,21 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function getPostedCategories() {
+		$posted_categories = '';
+		if (isset($this->request->post['categories'])) {
+			if (count($this->request->post['categories']) > 0) {
+				foreach ($this->request->post['categories'] as $category_id) {
+					$posted_categories .= ($posted_categories=='') ? '(' : ',';
+					$posted_categories .= $category_id;
+				}
+				$posted_categories .= ')';
+			}
+		}
+		return $posted_categories;
+	}
+
+
 	protected function getCategoryUrlAliasIds() {
 		$sql  = "SELECT url_alias_id, SUBSTRING( query, CHAR_LENGTH('category_id=')+1 ) AS category_id ";
 		$sql .= "FROM `".DB_PREFIX."url_alias` ";
@@ -379,7 +404,9 @@ class ModelToolExportImport extends Model {
 		$meta_descriptions = $category['meta_descriptions'];
 		$meta_h1s = $category['meta_h1s']; //added
 		$meta_keywords = $category['meta_keywords'];
-		$seo_keyword = $category['seo_keyword'];
+		if (!$this->use_table_seo_url) {
+			$seo_keyword = $category['seo_keyword'];
+		}
 		$store_ids = $category['store_ids'];
 		$layout = $category['layout'];
 		$status = $category['status'];
@@ -412,15 +439,17 @@ class ModelToolExportImport extends Model {
 			}
 			$this->db->query( $sql );
 		}
-		if ($seo_keyword) {
-			if (isset($url_alias_ids[$category_id])) {
-				$url_alias_id = $url_alias_ids[$category_id];
-				$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`url_alias_id`,`query`,`keyword`) VALUES ($url_alias_id,'category_id=$category_id','$seo_keyword');";
-				unset($url_alias_ids[$category_id]);
-			} else {
-				$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`query`,`keyword`) VALUES ('category_id=$category_id','$seo_keyword');";
+		if (!$this->use_table_seo_url) {
+			if ($seo_keyword) {
+				if (isset($url_alias_ids[$category_id])) {
+					$url_alias_id = $url_alias_ids[$category_id];
+					$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`url_alias_id`,`query`,`keyword`) VALUES ($url_alias_id,'category_id=$category_id','$seo_keyword');";
+					unset($url_alias_ids[$category_id]);
+				} else {
+					$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`query`,`keyword`) VALUES ('category_id=$category_id','$seo_keyword');";
+				}
+				$this->db->query($sql);
 			}
-			$this->db->query($sql);
 		}
 		foreach ($store_ids as $store_id) {
 			if (in_array((int)$store_id,$available_store_ids)) {
@@ -458,7 +487,9 @@ class ModelToolExportImport extends Model {
 		$sql  = "DELETE FROM `".DB_PREFIX."category` WHERE `category_id` = '".(int)$category_id."' ;\n";
 		$sql .= "DELETE FROM `".DB_PREFIX."category_description` WHERE `category_id` = '".(int)$category_id."' ;\n";
 		$sql .= "DELETE FROM `".DB_PREFIX."category_to_store` WHERE `category_id` = '".(int)$category_id."' ;\n";
-		$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'category_id=".(int)$category_id."';\n";
+		if (!$this->use_table_seo_url) {
+			$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'category_id=".(int)$category_id."';\n";
+		}
 		$sql .= "DELETE FROM `".DB_PREFIX."category_to_layout` WHERE `category_id` = '".(int)$category_id."' ;\n";
 		$this->multiquery( $sql );
 		$sql = "SHOW TABLES LIKE \"".DB_PREFIX."category_path\"";
@@ -474,7 +505,9 @@ class ModelToolExportImport extends Model {
 		$sql  = "TRUNCATE TABLE `".DB_PREFIX."category`;\n";
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."category_description`;\n";
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."category_to_store`;\n";
-		$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'category_id=%';\n";
+		if (!$this->use_table_seo_url) {
+			$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'category_id=%';\n";
+		}
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."category_to_layout`;\n";
 		$this->multiquery( $sql );
 		$sql = "SHOW TABLES LIKE \"".DB_PREFIX."category_path\"";
@@ -483,19 +516,21 @@ class ModelToolExportImport extends Model {
 			$sql = "TRUNCATE TABLE `".DB_PREFIX."category_path`";
 			$this->db->query( $sql );
 		}
-		$sql = "SELECT (MAX(url_alias_id)+1) AS next_url_alias_id FROM `".DB_PREFIX."url_alias` LIMIT 1";
-		$query = $this->db->query( $sql );
-		$next_url_alias_id = $query->row['next_url_alias_id'];
-		$sql = "ALTER TABLE `".DB_PREFIX."url_alias` AUTO_INCREMENT = $next_url_alias_id";
-		$this->db->query( $sql );
-		$remove = array();
-		foreach ($url_alias_ids as $category_id=>$url_alias_id) {
-			if ($url_alias_id >= $next_url_alias_id) {
-				$remove[$category_id] = $url_alias_id;
+		if (!$this->use_table_seo_url) {
+			$sql = "SELECT (MAX(url_alias_id)+1) AS next_url_alias_id FROM `".DB_PREFIX."url_alias` LIMIT 1";
+			$query = $this->db->query( $sql );
+			$next_url_alias_id = $query->row['next_url_alias_id'];
+			$sql = "ALTER TABLE `".DB_PREFIX."url_alias` AUTO_INCREMENT = $next_url_alias_id";
+			$this->db->query( $sql );
+			$remove = array();
+			foreach ($url_alias_ids as $category_id=>$url_alias_id) {
+				if ($url_alias_id >= $next_url_alias_id) {
+					$remove[$category_id] = $url_alias_id;
+				}
 			}
-		}
-		foreach ($remove as $category_id=>$url_alias_id) {
-			unset($url_alias_ids[$category_id]);
+			foreach ($remove as $category_id=>$url_alias_id) {
+				unset($url_alias_ids[$category_id]);
+			}
 		}
 	}
 
@@ -519,7 +554,9 @@ class ModelToolExportImport extends Model {
 		$exist_meta_title = ($query->num_rows > 0) ? true : false;
 
 		// get old url_alias_ids
-		$url_alias_ids = $this->getCategoryUrlAliasIds();
+		if (!$this->use_table_seo_url) {
+			$url_alias_ids = $this->getCategoryUrlAliasIds();
+		}
 
 		// if incremental then find current category IDs else delete all old categories
 		$available_category_ids = array();
@@ -571,7 +608,9 @@ class ModelToolExportImport extends Model {
 			$date_added = ((is_string($date_added)) && (strlen($date_added)>0)) ? $date_added : "NOW()";
 			$date_modified = trim($this->getCell($data,$i,$j++));
 			$date_modified = ((is_string($date_modified)) && (strlen($date_modified)>0)) ? $date_modified : "NOW()";
-			$seo_keyword = $this->getCell($data,$i,$j++);
+			if (!$this->use_table_seo_url) {
+				$seo_keyword = $this->getCell($data,$i,$j++);
+			}
 			$descriptions = array();
 			while ($this->startsWith($first_row[$j-1],"description(")) {
 				$language_code = substr($first_row[$j-1],strlen("description("),strlen($first_row[$j-1])-strlen("description(")-1);
@@ -631,7 +670,9 @@ class ModelToolExportImport extends Model {
 			$category['meta_descriptions'] = $meta_descriptions;
 			$category['meta_h1s'] = $meta_h1s; //added
 			$category['meta_keywords'] = $meta_keywords;
-			$category['seo_keyword'] = $seo_keyword;
+			if (!$this->use_table_seo_url) {
+				$category['seo_keyword'] = $seo_keyword;
+			}
 			$store_ids = trim( $this->clean($store_ids, false) );
 			$category['store_ids'] = ($store_ids=="") ? array() : explode( ",", $store_ids );
 			if ($category['store_ids']===false) {
@@ -775,6 +816,146 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function storeCategorySEOKeywordIntoDatabase( &$category_seo_keyword, &$languages, $old_seo_url_ids ) {
+		$category_id = $category_seo_keyword['category_id'];
+		$store_id = $category_seo_keyword['store_id'];
+		$keywords = $category_seo_keyword['keywords'];
+		foreach ($languages as $language) {
+			$language_id = $language['language_id'];
+			$language_code = $language['code'];
+			if (isset($keywords[$language_code])) {
+				$keyword = $keywords[$language_code];
+				if ($keyword != '') {
+					if (isset($old_seo_url_ids[$category_id][$store_id][$language_id])) {
+						$seo_url_id = $old_seo_url_ids[$category_id][$store_id][$language_id];
+						$sql  = "INSERT INTO `".DB_PREFIX."seo_url` (`seo_url_id`, `store_id`, `language_id`, `query`, `keyword`) VALUES ";
+						$sql .= "($seo_url_id, $store_id, $language_id, 'category_id=$category_id', '".$this->db->escape($keyword)."');";
+						$this->db->query( $sql );
+						unset($old_seo_url_ids[$category_id][$store_id][$language_id]);
+					} else {
+						$sql  = "INSERT INTO `".DB_PREFIX."seo_url` (`store_id`, `language_id`, `query`, `keyword`) VALUES ";
+						$sql .= "($store_id, $language_id, 'category_id=$category_id', '".$this->db->escape($keyword)."');";
+						$this->db->query( $sql );
+					}
+				}
+			}
+		}
+	}
+
+
+	protected function deleteCategorySEOKeywords() {
+		$sql = "DELETE FROM `".DB_PREFIX."seo_url` WHERE query LIKE 'category_id=%';";
+		$this->db->query( $sql );
+		$sql = "SELECT MAX(seo_url_id) AS max_seo_url_id FROM `".DB_PREFIX."seo_url`";
+		$query = $this->db->query( $sql );
+		$max_seo_url_id = isset( $query->row['max_seo_url_id'] ) ? $query->row['max_seo_url_id'] : 0;
+		$auto_increment = $max_seo_url_id + 1;
+		$sql = "ALTER TABLE `".DB_PREFIX."seo_url` AUTO_INCREMENT = $auto_increment;";
+		$this->db->query( $sql );
+	}
+
+
+	protected function deleteCategorySEOKeyword( $category_id ) {
+		$old_seo_url_ids = array();
+		$sql = "SELECT * FROM `".DB_PREFIX."seo_url` WHERE query='category_id=".(int)$category_id."';";
+		$query = $this->db->query( $sql );
+		foreach ($query->rows as $row) {
+			$seo_url_id = $row['seo_url_id'];
+			$store_id = $row['store_id'];
+			$category_id = (int)substr($row['query'],strlen('category_id='));
+			$language_id = $row['language_id'];
+			$old_seo_url_ids[$category_id][$store_id][$language_id] = $seo_url_id;
+		}
+		$sql = "DELETE FROM `".DB_PREFIX."seo_url` WHERE query='category_id=".(int)$category_id."';";
+		$this->db->query( $sql );
+		return $old_seo_url_ids;
+	}
+
+
+	protected function deleteUnlistedCategorySEOKeywords( &$unlisted_category_ids ) {
+		foreach ($unlisted_category_ids as $category_id) {
+			$sql = "DELETE FROM `".DB_PREFIX."seo_url` WHERE query='category_id=".(int)$category_id."';";
+			$this->db->query( $sql );
+		}
+	}
+
+
+	// function for reading additional cells in class extensions
+	protected function moreCategorySEOKeywordCells( $i, &$j, &$worksheet, &$category_seo_keyword ) {
+		return;
+	}
+
+
+	protected function uploadCategorySEOKeywords( &$reader, $incremental, &$available_category_ids ) {
+		// get worksheet, if not there return immediately
+		$data = $reader->getSheetByName( 'CategorySEOKeywords' );
+		if ($data==null) {
+			return;
+		}
+
+		// if DB table 'seo_url' doesn't exist (OpenCart 1.5.x, 2.x versions) then return immediately
+		if (!$this->use_table_seo_url) {
+			return;
+		}
+
+		// if incremental then find current category IDs else delete all old category SEO keywords
+		if ($incremental) {
+			$unlisted_category_ids = $available_category_ids;
+		} else {
+			$this->deleteCategorySEOKeywords();
+		}
+
+		// load the worksheet cells and store them to the database
+		$old_seo_url_ids = array();
+		$languages = $this->getLanguages();
+		$previous_category_id = 0;
+		$first_row = array();
+		$i = 0;
+		$k = $data->getHighestRow();
+		for ($i=0; $i<$k; $i+=1) {
+			if ($i==0) {
+				$max_col = PHPExcel_Cell::columnIndexFromString( $data->getHighestColumn() );
+				for ($j=1; $j<=$max_col; $j+=1) {
+					$first_row[] = $this->getCell($data,$i,$j);
+				}
+				continue;
+			}
+			$j = 1;
+			$category_id = trim($this->getCell($data,$i,$j++));
+			if ($category_id=='') {
+				continue;
+			}
+			$store_id = trim($this->getCell($data,$i,$j++));
+			if ($store_id=='') {
+				continue;
+			}
+			$keywords = array();
+			while (($j<=$max_col) && $this->startsWith($first_row[$j-1],"keyword(")) {
+				$language_code = substr($first_row[$j-1],strlen("keyword("),strlen($first_row[$j-1])-strlen("keyword(")-1);
+				$keyword = trim($this->getCell($data,$i,$j++,''));
+				$keyword = htmlspecialchars( $keyword );
+				$keywords[$language_code] = $keyword;
+			}
+			$category_seo_keyword = array();
+			$category_seo_keyword['category_id'] = $category_id;
+			$category_seo_keyword['store_id'] = $store_id;
+			$category_seo_keyword['keywords'] = $keywords;
+			if (($incremental) && ($category_id != $previous_category_id)) {
+				$old_seo_url_ids = $this->deleteCategorySEOKeyword( $category_id );
+				if (isset($unlisted_category_ids[$category_id])) {
+					unset($unlisted_category_ids[$category_id]);
+				}
+			}
+			$this->moreCategorySEOKeywordCells( $i, $j, $data, $category_seo_keyword );
+			$this->storeCategorySEOKeywordIntoDatabase( $category_seo_keyword, $languages, $old_seo_url_ids );
+			$previous_category_id = $category_id;
+		}
+		if ($incremental) {
+			$this->deleteUnlistedCategorySEOKeywords( $unlisted_category_ids );
+		}
+	}
+
+
 	protected function getProductViewCounts() {
 		$query = $this->db->query( "SELECT product_id, viewed FROM `".DB_PREFIX."product`" );
 		$view_counts = array();
@@ -836,18 +1017,12 @@ class ModelToolExportImport extends Model {
 		$length = $product['length'];
 		$width = $product['width'];
 		$height = $product['height'];
-		$keyword = $this->db->escape($product['seo_keyword']);
+		if (!$this->use_table_seo_url) {
+			$keyword = $this->db->escape($product['seo_keyword']);
+		}
 		$length_unit = $product['measurement_unit'];
 		$length_class_id = (isset($length_class_ids[$length_unit])) ? $length_class_ids[$length_unit] : 0;
 		$sku = $this->db->escape($product['sku']);
-        $size = $this->db->escape($product['size']);
-        $oe = $this->db->escape($product['oe']);
-        $obd = $this->db->escape($product['obd']);
-        $osd = $this->db->escape($product['osd']);
-        $w = $this->db->escape($product['w']);
-        $a = $this->db->escape($product['a']);
-		$b = $this->db->escape($product['b']);
-        $l = $this->db->escape($product['l']);        
 		$upc = $this->db->escape($product['upc']);
 		if (in_array('ean',$product_fields)) {
 			$ean = $this->db->escape($product['ean']);
@@ -855,35 +1030,11 @@ class ModelToolExportImport extends Model {
 		if (in_array('jan',$product_fields)) {
 			$jan = $this->db->escape($product['jan']);
 		}
-		if (in_array('isbn',$product_fields)) { 
+		if (in_array('isbn',$product_fields)) {
 			$isbn = $this->db->escape($product['isbn']);
 		}
 		if (in_array('mpn',$product_fields)) {
 			$mpn = $this->db->escape($product['mpn']);
-		}
-		if (in_array('o',$product_fields)) {
-			$o = $this->db->escape($product['o']);
-		}
-		if (in_array('articul_dop',$product_fields)) {
-			$articul_dop = $this->db->escape($product['articul_dop']);
-		}
-		if (in_array('d1',$product_fields)) {
-			$d1= $this->db->escape($product['d1']);
-		}
-		if (in_array('norma',$product_fields)) {
-			$norma = $this->db->escape($product['norma']);
-		}
-		if (in_array('range',$product_fields)) {
-			$range = $this->db->escape($product['range']);
-		}
-		if (in_array('color',$product_fields)) {
-			$color = $this->db->escape($product['color']);
-		}
-		if (in_array('name_short',$product_fields)) {
-			$name_short = $this->db->escape($product['name_short']);
-		}
-		if (in_array('thickness',$product_fields)) {
-			$thickness = $this->db->escape($product['thickness']);
 		}
 		$location = $this->db->escape($product['location']);
 		$store_ids = $product['store_ids'];
@@ -903,34 +1054,18 @@ class ModelToolExportImport extends Model {
 		}
 
 		// generate and execute SQL for inserting the product
-		$sql  = "INSERT INTO `".DB_PREFIX."product` (`product_id`,`quantity`,`sku`,`size`,`oe`,`obd`,`osd`,`w`,`a`,`b`,`l`,`upc`,";
+		$sql  = "INSERT INTO `".DB_PREFIX."product` (`product_id`,`quantity`,`sku`,`upc`,";
 		$sql .= in_array('ean',$product_fields) ? "`ean`," : "";
 		$sql .= in_array('jan',$product_fields) ? "`jan`," : "";
 		$sql .= in_array('isbn',$product_fields) ? "`isbn`," : "";
 		$sql .= in_array('mpn',$product_fields) ? "`mpn`," : "";
-		$sql .= in_array('o',$product_fields) ? "`o`," : "";
-		$sql .= in_array('articul_dop',$product_fields) ? "`articul_dop`," : "";
-		$sql .= in_array('d1',$product_fields) ? "`d1`," : "";
-		$sql .= in_array('norma',$product_fields) ? "`norma`," : "";
-		$sql .= in_array('range',$product_fields) ? "`range`," : "";
-		$sql .= in_array('color',$product_fields) ? "`color`," : "";
-		$sql .= in_array('name_short',$product_fields) ? "`name_short`," : "";
-		$sql .= in_array('thickness',$product_fields) ? "`thickness`," : "";
 		$sql .= "`location`,`stock_status_id`,`model`,`manufacturer_id`,`image`,`shipping`,`price`,`points`,`date_added`,`date_modified`,`date_available`,`weight`,`weight_class_id`,`status`,";
 		$sql .= "`tax_class_id`,`viewed`,`length`,`width`,`height`,`length_class_id`,`sort_order`,`subtract`,`minimum`) VALUES ";
-		$sql .= "($product_id,$quantity,'$sku','$size','$oe','$obd','$osd','$w','$a','$b','$l','$upc',";
+		$sql .= "($product_id,$quantity,'$sku','$upc',";
 		$sql .= in_array('ean',$product_fields) ? "'$ean'," : "";
 		$sql .= in_array('jan',$product_fields) ? "'$jan'," : "";
 		$sql .= in_array('isbn',$product_fields) ? "'$isbn'," : "";
 		$sql .= in_array('mpn',$product_fields) ? "'$mpn'," : "";
-		$sql .= in_array('o',$product_fields) ? "'$o'," : "";
-		$sql .= in_array('articul_dop',$product_fields) ? "'$articul_dop'," : "";
-		$sql .= in_array('d1',$product_fields) ? "'$d1'," : "";
-		$sql .= in_array('norma',$product_fields) ? "'$norma'," : "";
-		$sql .= in_array('range',$product_fields) ? "'$range'," : "";
-		$sql .= in_array('color',$product_fields) ? "'$color'," : "";
-		$sql .= in_array('name_short',$product_fields) ? "'$name_short'," : "";
-		$sql .= in_array('thickness',$product_fields) ? "'$thickness'," : "";
 		$sql .= "'$location',$stock_status_id,'$model',$manufacturer_id,'$image',$shipping,$price,$points,";
 		$sql .= ($date_added=='NOW()') ? "$date_added," : "'$date_added',";
 		$sql .= ($date_modified=='NOW()') ? "$date_modified," : "'$date_modified',";
@@ -984,20 +1119,20 @@ class ModelToolExportImport extends Model {
 			$sql .= ";";
 			$this->db->query($sql);
 		}
-
         if ($main_category) { //added
             $this->db->query("UPDATE " . DB_PREFIX . "product_to_category SET main_category=1 WHERE category_id = '" . $main_category . "' AND product_id = '" . $product_id . "'");
         } //added
-
-		if ($keyword) {
-			if (isset($url_alias_ids[$product_id])) {
-				$url_alias_id = $url_alias_ids[$product_id];
-				$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`url_alias_id`,`query`,`keyword`) VALUES ($url_alias_id,'product_id=$product_id','$keyword');";
-				unset($url_alias_ids[$product_id]);
-			} else {
-				$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`query`,`keyword`) VALUES ('product_id=$product_id','$keyword');";
+		if (!$this->use_table_seo_url) {
+			if ($keyword) {
+				if (isset($url_alias_ids[$product_id])) {
+					$url_alias_id = $url_alias_ids[$product_id];
+					$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`url_alias_id`,`query`,`keyword`) VALUES ($url_alias_id,'product_id=$product_id','$keyword');";
+					unset($url_alias_ids[$product_id]);
+				} else {
+					$sql = "INSERT INTO `".DB_PREFIX."url_alias` (`query`,`keyword`) VALUES ('product_id=$product_id','$keyword');";
+				}
+				$this->db->query($sql);
 			}
-			$this->db->query($sql);
 		}
 		foreach ($store_ids as $store_id) {
 			if (in_array((int)$store_id,$available_store_ids)) {
@@ -1047,26 +1182,30 @@ class ModelToolExportImport extends Model {
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."product_description`;\n";
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."product_to_category`;\n";
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."product_to_store`;\n";
-		$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'product_id=%';\n";
+		if (!$this->use_table_seo_url) {
+			$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'product_id=%';\n";
+		}
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."product_related`;\n";
 		$sql .= "TRUNCATE TABLE `".DB_PREFIX."product_to_layout`;\n";
 		if ($exist_table_product_tag) {
 			$sql .= "TRUNCATE TABLE `".DB_PREFIX."product_tag`;\n";
 		}
 		$this->multiquery( $sql );
-		$sql = "SELECT (MAX(url_alias_id)+1) AS next_url_alias_id FROM `".DB_PREFIX."url_alias` LIMIT 1";
-		$query = $this->db->query( $sql );
-		$next_url_alias_id = $query->row['next_url_alias_id'];
-		$sql = "ALTER TABLE `".DB_PREFIX."url_alias` AUTO_INCREMENT = $next_url_alias_id";
-		$this->db->query( $sql );
-		$remove = array();
-		foreach ($url_alias_ids as $product_id=>$url_alias_id) {
-			if ($url_alias_id >= $next_url_alias_id) {
-				$remove[$product_id] = $url_alias_id;
+		if (!$this->use_table_seo_url) {
+			$sql = "SELECT (MAX(url_alias_id)+1) AS next_url_alias_id FROM `".DB_PREFIX."url_alias` LIMIT 1";
+			$query = $this->db->query( $sql );
+			$next_url_alias_id = $query->row['next_url_alias_id'];
+			$sql = "ALTER TABLE `".DB_PREFIX."url_alias` AUTO_INCREMENT = $next_url_alias_id";
+			$this->db->query( $sql );
+			$remove = array();
+			foreach ($url_alias_ids as $product_id=>$url_alias_id) {
+				if ($url_alias_id >= $next_url_alias_id) {
+					$remove[$product_id] = $url_alias_id;
+				}
 			}
-		}
-		foreach ($remove as $product_id=>$url_alias_id) {
-			unset($url_alias_ids[$product_id]);
+			foreach ($remove as $product_id=>$url_alias_id) {
+				unset($url_alias_ids[$product_id]);
+			}
 		}
 	}
 
@@ -1076,7 +1215,9 @@ class ModelToolExportImport extends Model {
 		$sql .= "DELETE FROM `".DB_PREFIX."product_description` WHERE `product_id` = '$product_id';\n";
 		$sql .= "DELETE FROM `".DB_PREFIX."product_to_category` WHERE `product_id` = '$product_id';\n";
 		$sql .= "DELETE FROM `".DB_PREFIX."product_to_store` WHERE `product_id` = '$product_id';\n";
-		$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'product_id=$product_id';\n";
+		if (!$this->use_table_seo_url) {
+			$sql .= "DELETE FROM `".DB_PREFIX."url_alias` WHERE `query` LIKE 'product_id=$product_id';\n";
+		}
 		$sql .= "DELETE FROM `".DB_PREFIX."product_related` WHERE `product_id` = '$product_id';\n";
 		$sql .= "DELETE FROM `".DB_PREFIX."product_to_layout` WHERE `product_id` = '$product_id';\n";
 		if ($exist_table_product_tag) {
@@ -1103,7 +1244,10 @@ class ModelToolExportImport extends Model {
 		$view_counts = $this->getProductViewCounts();
 
 		// save old url_alias_ids
-		$url_alias_ids = $this->getProductUrlAliasIds();
+		$url_alias_ids = array();
+		if (!$this->use_table_seo_url) {
+			$url_alias_ids = $this->getProductUrlAliasIds();
+		}
 
 		// some older versions of OpenCart use the 'product_tag' table
 		$exist_table_product_tag = false;
@@ -1185,14 +1329,6 @@ class ModelToolExportImport extends Model {
 			$categories = $this->getCell($data,$i,$j++);
 			$main_category = $this->getCell($data,$i,$j++,''); //added
 			$sku = $this->getCell($data,$i,$j++,'');
-            $size = $this->getCell($data,$i,$j++,'');
-            $oe = $this->getCell($data,$i,$j++,'');
-            $obd = $this->getCell($data,$i,$j++,'');
-            $osd = $this->getCell($data,$i,$j++,'');
-            $w = $this->getCell($data,$i,$j++,'');
-			$a = $this->getCell($data,$i,$j++,'');
-            $b = $this->getCell($data,$i,$j++,'');
-            $l = $this->getCell($data,$i,$j++,'');
 			$upc = $this->getCell($data,$i,$j++,'');
 			if (in_array('ean',$product_fields)) {
 				$ean = $this->getCell($data,$i,$j++,'');
@@ -1205,30 +1341,6 @@ class ModelToolExportImport extends Model {
 			}
 			if (in_array('mpn',$product_fields)) {
 				$mpn = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('o',$product_fields)) {
-				$o = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('articul_dop',$product_fields)) {
-				$articul_dop = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('d1',$product_fields)) {
-				$d1 = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('norma',$product_fields)) {
-				$norma = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('range',$product_fields)) {
-				$range = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('color',$product_fields)) {
-				$color = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('name_short',$product_fields)) {
-				$name_short = $this->getCell($data,$i,$j++,'');
-			}
-			if (in_array('thickness',$product_fields)) {
-				$thickness = $this->getCell($data,$i,$j++,'');
 			}
 			$location = $this->getCell($data,$i,$j++,'');
 			$quantity = $this->getCell($data,$i,$j++,'0');
@@ -1252,7 +1364,9 @@ class ModelToolExportImport extends Model {
 			$measurement_unit = $this->getCell($data,$i,$j++,$default_measurement_unit);
 			$status = $this->getCell($data,$i,$j++,'true');
 			$tax_class_id = $this->getCell($data,$i,$j++,'0');
-			$keyword = $this->getCell($data,$i,$j++);
+			if (!$this->use_table_seo_url) {
+				$keyword = $this->getCell($data,$i,$j++);
+			}
 			$descriptions = array();
 			while ($this->startsWith($first_row[$j-1],"description(")) {
 				$language_code = substr($first_row[$j-1],strlen("description("),strlen($first_row[$j-1])-strlen("description(")-1);
@@ -1340,17 +1454,11 @@ class ModelToolExportImport extends Model {
 			$product['length'] = $length;
 			$product['width'] = $width;
 			$product['height'] = $height;
-			$product['seo_keyword'] = $keyword;
+			if (!$this->use_table_seo_url) {
+				$product['seo_keyword'] = $keyword;
+			}
 			$product['measurement_unit'] = $measurement_unit;
-			$product['sku'] = $sku;           
-            $product['size'] = $size;
-            $product['oe'] = $oe;
-            $product['obd'] = $obd;
-            $product['osd'] = $osd;
-            $product['w'] = $w;
-			$product['a'] = $a;
-            $product['b'] = $b;
-            $product['l'] = $l;
+			$product['sku'] = $sku;
 			$product['upc'] = $upc;
 			if (in_array('ean',$product_fields)) {
 				$product['ean'] = $ean;
@@ -1363,30 +1471,6 @@ class ModelToolExportImport extends Model {
 			}
 			if (in_array('mpn',$product_fields)) {
 				$product['mpn'] = $mpn;
-			}
-			if (in_array('o',$product_fields)) {
-				$product['o'] = $o;
-			}
-			if (in_array('articul_dop',$product_fields)) {
-				$product['articul_dop'] = $articul_dop;
-			}
-			if (in_array('d1',$product_fields)) {
-				$product['d1'] = $d1;
-			}
-			if (in_array('norma',$product_fields)) {
-				$product['norma'] = $norma;
-			}
-			if (in_array('range',$product_fields)) {
-				$product['range'] = $range;
-			}
-			if (in_array('color',$product_fields)) {
-				$product['color'] = $color;
-			}
-			if (in_array('name_short',$product_fields)) {
-				$product['name_short'] = $name_short;
-			}
-			if (in_array('thickness',$product_fields)) {
-				$product['thickness'] = $thickness;
 			}
 			$product['location'] = $location;
 			$store_ids = trim( $this->clean($store_ids, false) );
@@ -2064,7 +2148,7 @@ class ModelToolExportImport extends Model {
 		foreach ($query->rows as $row) {
 			$option_id = $row['option_id'];
 			$option_value_id = $row['option_value_id'];
-			$name = $row['name'];
+			$name = htmlspecialchars_decode($row['name']);
 			$option_value_ids[$option_id][$name] = $option_value_id;
 		}
 		return $option_value_ids;
@@ -2256,7 +2340,7 @@ class ModelToolExportImport extends Model {
 		$attribute_group_ids = array();
 		foreach ($query->rows as $row) {
 			$attribute_group_id = $row['attribute_group_id'];
-			$name = $row['name'];
+			$name = html_entity_decode($row['name'],ENT_QUOTES,'UTF-8');
 			$attribute_group_ids[$name] = $attribute_group_id;
 		}
 		return $attribute_group_ids;
@@ -2273,7 +2357,7 @@ class ModelToolExportImport extends Model {
 		foreach ($query->rows as $row) {
 			$attribute_group_id = $row['attribute_group_id'];
 			$attribute_id = $row['attribute_id'];
-			$name = $row['name'];
+			$name = html_entity_decode($row['name'],ENT_QUOTES,'UTF-8');
 			$attribute_ids[$attribute_group_id][$name] = $attribute_id;
 		}
 		return $attribute_ids;
@@ -2415,7 +2499,7 @@ class ModelToolExportImport extends Model {
 		$filter_group_ids = array();
 		foreach ($query->rows as $row) {
 			$filter_group_id = $row['filter_group_id'];
-			$name = $row['name'];
+			$name = html_entity_decode($row['name'],ENT_QUOTES,'UTF-8');
 			$filter_group_ids[$name] = $filter_group_id;
 		}
 		return $filter_group_ids;
@@ -2432,7 +2516,7 @@ class ModelToolExportImport extends Model {
 		foreach ($query->rows as $row) {
 			$filter_group_id = $row['filter_group_id'];
 			$filter_id = $row['filter_id'];
-			$name = $row['name'];
+			$name = html_entity_decode($row['name'],ENT_QUOTES,'UTF-8');
 			$filter_ids[$filter_group_id][$name] = $filter_id;
 		}
 		return $filter_ids;
@@ -2548,6 +2632,146 @@ class ModelToolExportImport extends Model {
 		}
 		if ($incremental) {
 			$this->deleteUnlistedProductFilters( $unlisted_product_ids );
+		}
+	}
+
+
+	protected function storeProductSEOKeywordIntoDatabase( &$product_seo_keyword, &$languages, $old_seo_url_ids ) {
+		$product_id = $product_seo_keyword['product_id'];
+		$store_id = $product_seo_keyword['store_id'];
+		$keywords = $product_seo_keyword['keywords'];
+		foreach ($languages as $language) {
+			$language_id = $language['language_id'];
+			$language_code = $language['code'];
+			if (isset($keywords[$language_code])) {
+				$keyword = $keywords[$language_code];
+				if ($keyword != '') {
+					if (isset($old_seo_url_ids[$product_id][$store_id][$language_id])) {
+						$seo_url_id = $old_seo_url_ids[$product_id][$store_id][$language_id];
+						$sql  = "INSERT INTO `".DB_PREFIX."seo_url` (`seo_url_id`, `store_id`, `language_id`, `query`, `keyword`) VALUES ";
+						$sql .= "($seo_url_id, $store_id, $language_id, 'product_id=$product_id', '".$this->db->escape($keyword)."');";
+						$this->db->query( $sql );
+						unset($old_seo_url_ids[$product_id][$store_id][$language_id]);
+					} else {
+						$sql  = "INSERT INTO `".DB_PREFIX."seo_url` (`store_id`, `language_id`, `query`, `keyword`) VALUES ";
+						$sql .= "($store_id, $language_id, 'product_id=$product_id', '".$this->db->escape($keyword)."');";
+						$this->db->query( $sql );
+					}
+				}
+			}
+		}
+	}
+
+
+	protected function deleteProductSEOKeywords() {
+		$sql = "DELETE FROM `".DB_PREFIX."seo_url` WHERE query LIKE 'product_id=%';";
+		$this->db->query( $sql );
+		$sql = "SELECT MAX(seo_url_id) AS max_seo_url_id FROM `".DB_PREFIX."seo_url`";
+		$query = $this->db->query( $sql );
+		$max_seo_url_id = isset( $query->row['max_seo_url_id'] ) ? $query->row['max_seo_url_id'] : 0;
+		$auto_increment = $max_seo_url_id + 1;
+		$sql = "ALTER TABLE `".DB_PREFIX."seo_url` AUTO_INCREMENT = $auto_increment;";
+		$this->db->query( $sql );
+	}
+
+
+	protected function deleteProductSEOKeyword( $product_id ) {
+		$old_seo_url_ids = array();
+		$sql = "SELECT * FROM `".DB_PREFIX."seo_url` WHERE query='product_id=".(int)$product_id."';";
+		$query = $this->db->query( $sql );
+		foreach ($query->rows as $row) {
+			$seo_url_id = $row['seo_url_id'];
+			$store_id = $row['store_id'];
+			$product_id = (int)substr($row['query'],strlen('product_id='));
+			$language_id = $row['language_id'];
+			$old_seo_url_ids[$product_id][$store_id][$language_id] = $seo_url_id;
+		}
+		$sql = "DELETE FROM `".DB_PREFIX."seo_url` WHERE query='product_id=".(int)$product_id."';";
+		$this->db->query( $sql );
+		return $old_seo_url_ids;
+	}
+
+
+	protected function deleteUnlistedProductSEOKeywords( &$unlisted_product_ids ) {
+		foreach ($unlisted_product_ids as $product_id) {
+			$sql = "DELETE FROM `".DB_PREFIX."seo_url` WHERE query='product_id=".(int)$product_id."';";
+			$this->db->query( $sql );
+		}
+	}
+
+
+	// function for reading additional cells in class extensions
+	protected function moreProductSEOKeywordCells( $i, &$j, &$worksheet, &$product_seo_keyword ) {
+		return;
+	}
+
+
+	protected function uploadProductSEOKeywords( &$reader, $incremental, &$available_product_ids ) {
+		// get worksheet, if not there return immediately
+		$data = $reader->getSheetByName( 'ProductSEOKeywords' );
+		if ($data==null) {
+			return;
+		}
+
+		// if DB table 'seo_url' doesn't exist (OpenCart 1.5.x, 2.x versions) then return immediately
+		if (!$this->use_table_seo_url) {
+			return;
+		}
+
+		// if incremental then find current product IDs else delete all old product SEO keywords
+		if ($incremental) {
+			$unlisted_product_ids = $available_product_ids;
+		} else {
+			$this->deleteProductSEOKeywords();
+		}
+
+		// load the worksheet cells and store them to the database
+		$old_seo_url_ids = array();
+		$languages = $this->getLanguages();
+		$previous_product_id = 0;
+		$first_row = array();
+		$i = 0;
+		$k = $data->getHighestRow();
+		for ($i=0; $i<$k; $i+=1) {
+			if ($i==0) {
+				$max_col = PHPExcel_Cell::columnIndexFromString( $data->getHighestColumn() );
+				for ($j=1; $j<=$max_col; $j+=1) {
+					$first_row[] = $this->getCell($data,$i,$j);
+				}
+				continue;
+			}
+			$j = 1;
+			$product_id = trim($this->getCell($data,$i,$j++));
+			if ($product_id=='') {
+				continue;
+			}
+			$store_id = trim($this->getCell($data,$i,$j++));
+			if ($store_id=='') {
+				continue;
+			}
+			$keywords = array();
+			while (($j<=$max_col) && $this->startsWith($first_row[$j-1],"keyword(")) {
+				$language_code = substr($first_row[$j-1],strlen("keyword("),strlen($first_row[$j-1])-strlen("keyword(")-1);
+				$keyword = trim($this->getCell($data,$i,$j++,''));
+				$keyword = htmlspecialchars( $keyword );
+				$keywords[$language_code] = $keyword;
+			}
+			$product_seo_keyword = array();
+			$product_seo_keyword['product_id'] = $product_id;
+			$product_seo_keyword['store_id'] = $store_id;
+			$product_seo_keyword['keywords'] = $keywords;
+			if (($incremental) && ($product_id != $previous_product_id)) {
+				$old_seo_url_ids = $this->deleteProductSEOKeyword( $product_id );
+				if (isset($unlisted_product_ids[$product_id])) {
+					unset($unlisted_product_ids[$product_id]);
+				}
+			}
+			$this->moreProductSEOKeywordCells( $i, $j, $data, $product_seo_keyword );
+			$this->storeProductSEOKeywordIntoDatabase( $product_seo_keyword, $languages, $old_seo_url_ids );
+			$previous_product_id = $product_id;
+		}
+		if ($incremental) {
+			$this->deleteUnlistedProductSEOKeywords( $unlisted_product_ids );
 		}
 	}
 
@@ -3161,7 +3385,7 @@ class ModelToolExportImport extends Model {
 	}
 
 
-	protected function storeCustomerIntoDatabase( &$customer, $exist_custom_field, $exist_salt, $exist_safe, $exist_token, $exist_code ) {
+	protected function storeCustomerIntoDatabase( &$customer, $exist_custom_field, $exist_salt, $exist_safe, $exist_token, $exist_code, $exist_approved ) {
 		$customer_id = $customer['customer_id'];
 		$customer_group_id = $customer['customer_group_id'];
 		$store_id = $customer['store_id'];
@@ -3186,8 +3410,10 @@ class ModelToolExportImport extends Model {
 		$ip = $customer['ip'];
 		$status = $customer['status'];
 		$status = ((strtoupper($status)=="TRUE") || (strtoupper($status)=="YES") || (strtoupper($status)=="ENABLED")) ? 1 : 0;
-		$approved = $customer['approved'];
-		$approved = ((strtoupper($approved)=="TRUE") || (strtoupper($approved)=="YES") || (strtoupper($approved)=="ENABLED")) ? 1 : 0;
+		if ($exist_approved) {
+			$approved = $customer['approved'];
+			$approved = ((strtoupper($approved)=="TRUE") || (strtoupper($approved)=="YES") || (strtoupper($approved)=="ENABLED")) ? 1 : 0;
+		}
 		if ($exist_safe) {
 			$safe = $customer['safe'];
 			$safe = ((strtoupper($safe)=="TRUE") || (strtoupper($safe)=="YES") || (strtoupper($safe)=="ENABLED")) ? 1 : 0;
@@ -3210,7 +3436,10 @@ class ModelToolExportImport extends Model {
 		if ($exist_custom_field) {
 			$sql .= "`custom_field`,";
 		}
-		$sql .= "`ip`,`status`,`approved`,";
+		$sql .= "`ip`,`status`,";
+		if ($exist_approved) {
+			$sql .= "`approved`,";
+		}
 		if ($exist_safe) {
 			$sql .= "`safe`,";
 		}
@@ -3237,7 +3466,10 @@ class ModelToolExportImport extends Model {
 			$sql .= "'".$this->db->escape($custom_field)."', ";
 		}
 		$sql .= "'".$this->db->escape($ip)."', ";
-		$sql .= "$status, $approved, ";
+		$sql .= "$status, ";
+		if ($exist_approved) {
+			$sql .= "$approved, ";
+		}
 		if ($exist_safe) {
 			$sql .= "$safe, ";
 		}
@@ -3277,7 +3509,7 @@ class ModelToolExportImport extends Model {
 			return;
 		}
 
-		// Some fields are only available in newer Opencart versions
+		// Some fields are only available in certain Opencart versions
 		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'custom_field'";
 		$query = $this->db->query( $sql );
 		$exist_custom_field = ($query->num_rows > 0) ? true : false;
@@ -3293,6 +3525,9 @@ class ModelToolExportImport extends Model {
 		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'code'";
 		$query = $this->db->query( $sql );
 		$exist_code = ($query->num_rows > 0) ? true : false;
+		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'approved'";
+		$query = $this->db->query( $sql );
+		$exist_approved = ($query->num_rows > 0) ? true : false;
 
 		// get customer_group ids indexed by customer group names
 		$customer_group_ids = $this->getCustomerGroupIds();
@@ -3353,7 +3588,9 @@ class ModelToolExportImport extends Model {
 			}
 			$ip = trim($this->getCell($data,$i,$j++));
 			$status = $this->getCell($data,$i,$j++,'true');
-			$approved = $this->getCell($data,$i,$j++,'true');
+			if ($exist_approved) {
+				$approved = $this->getCell($data,$i,$j++,'true');
+			}
 			if ($exist_safe) {
 				$safe = $this->getCell($data,$i,$j++,'true');
 			}
@@ -3387,7 +3624,9 @@ class ModelToolExportImport extends Model {
 			}
 			$customer['ip'] = $ip;
 			$customer['status'] = $status;
-			$customer['approved'] = $approved;
+			if ($exist_approved) {
+				$customer['approved'] = $approved;
+			}
 			if ($exist_safe) {
 				$customer['safe'] = $safe;
 			}
@@ -3407,7 +3646,7 @@ class ModelToolExportImport extends Model {
 			}
 			$available_customer_ids[$customer_id] = $customer_id;
 			$this->moreCustomerCells( $i, $j, $data, $customer );
-			$this->storeCustomerIntoDatabase( $customer, $exist_custom_field, $exist_salt, $exist_safe, $exist_token, $exist_code );
+			$this->storeCustomerIntoDatabase( $customer, $exist_custom_field, $exist_salt, $exist_safe, $exist_token, $exist_code, $exist_approved );
 		}
 	}
 
@@ -3725,13 +3964,26 @@ class ModelToolExportImport extends Model {
 		$query = $this->db->query( $sql );
 		$exist_meta_title = ($query->num_rows > 0) ? true : false;
 
+		if ($this->use_table_seo_url) {
 		if ($exist_meta_title) {
-			$expected_heading = array
-			( "category_id", "parent_id", "name", "top", "columns", "sort_order", "image_name", "date_added", "date_modified", "seo_keyword", "description", "meta_title", "meta_description", "meta_h1", "meta_keywords", "store_ids", "layout", "status" );
+				$expected_heading = array
+				( "category_id", "parent_id", "name", "top", "columns", "sort_order", "image_name", "date_added", "date_modified", "description", "meta_title", "meta_description", "meta_h1", "meta_keywords", "store_ids", "layout", "status" );
+			} else {
+				$expected_heading = array
+				( "category_id", "parent_id", "name", "top", "columns", "sort_order", "image_name", "date_added", "date_modified", "description", "meta_description", "meta_h1", "meta_keywords", "store_ids", "layout", "status" );
+			}
+		} else {
+			if ($exist_meta_title) {
+				$expected_heading = array
+				( "category_id", "parent_id", "name", "top", "columns", "sort_order", "image_name", "date_added", "date_modified", "seo_keyword", "description", "meta_title", "meta_description", "meta_h1", "meta_keywords", "store_ids", "layout", "status" );
+			} else {
+				$expected_heading = array
+				( "category_id", "parent_id", "name", "top", "columns", "sort_order", "image_name", "date_added", "date_modified", "seo_keyword", "description", "meta_description", "meta_h1", "meta_keywords", "store_ids", "layout", "status" );
+			}
+		}
+		if ($exist_meta_title) {
 			$expected_multilingual = array( "name", "description", "meta_title", "meta_description", "meta_h1", "meta_keywords" );
 		} else {
-			$expected_heading = array
-			( "category_id", "parent_id", "name", "top", "columns", "sort_order", "image_name", "date_added", "date_modified", "seo_keyword", "description", "meta_description", "meta_h1", "meta_keywords", "store_ids", "layout", "status" );
 			$expected_multilingual = array( "name", "description", "meta_description", "meta_h1", "meta_keywords" );
 		}
 		return $this->validateHeading( $data, $expected_heading, $expected_multilingual );
@@ -3764,6 +4016,20 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function validateCategorySEOKeywords( &$reader ) {
+		$data = $reader->getSheetByName( 'CategorySEOKeywords' );
+		if ($data==null) {
+			return true;
+		}
+		if (!$this->use_table_seo_url) {
+			throw new Exception( str_replace( '%1', 'CategorySEOKeywords', $this->language->get( 'error_seo_keywords_not_supported' ) ) );
+		}
+		$expected_heading = array( "category_id", "store_id", "keyword" );
+		$expected_multilingual = array( "keyword" );
+		return $this->validateHeading( $data, $expected_heading, $expected_multilingual );
+	}
+
+
 	protected function validateProducts( &$reader ) {
 		$data = $reader->getSheetByName( 'Products' );
 		if ($data==null) {
@@ -3783,7 +4049,7 @@ class ModelToolExportImport extends Model {
 		$exist_meta_title = ($query->num_rows > 0) ? true : false;
 
 		$expected_heading = array
-		( "product_id", "name", "categories", "main_category", "sku", "size", "oe", "obd", "osd", "w", "a", "b", "l", "upc" ); //added
+		( "product_id", "name", "categories", "main_category", "sku", "upc" ); //added
 		if (in_array("ean",$product_fields)) {
 			$expected_heading[] = "ean";
 		}
@@ -3796,31 +4062,11 @@ class ModelToolExportImport extends Model {
 		if (in_array("mpn",$product_fields)) {
 			$expected_heading[] = "mpn";
 		}
-		if (in_array("o",$product_fields)) {
-			$expected_heading[] = "o";
+		if ($this->use_table_seo_url) {
+			$expected_heading = array_merge( $expected_heading, array( "location", "quantity", "model", "manufacturer", "image_name", "shipping", "price", "points", "date_added", "date_modified", "date_available", "weight", "weight_unit", "length", "width", "height", "length_unit", "status", "tax_class_id", "description") );
+		} else {
+			$expected_heading = array_merge( $expected_heading, array( "location", "quantity", "model", "manufacturer", "image_name", "shipping", "price", "points", "date_added", "date_modified", "date_available", "weight", "weight_unit", "length", "width", "height", "length_unit", "status", "tax_class_id", "seo_keyword", "description") );
 		}
-		if (in_array("articul_dop",$product_fields)) {
-			$expected_heading[] = "articul_dop";
-		}
-		if (in_array("d1",$product_fields)) {
-			$expected_heading[] = "d1";
-		}
-		if (in_array("norma",$product_fields)) {
-			$expected_heading[] = "norma";
-		}
-		if (in_array("range",$product_fields)) {
-			$expected_heading[] = "range";
-		}
-		if (in_array("color",$product_fields)) {
-			$expected_heading[] = "color";
-		}
-		if (in_array("name_short",$product_fields)) {
-			$expected_heading[] = "name_short";
-		}
-		if (in_array("thickness",$product_fields)) {
-			$expected_heading[] = "thickness";
-		}
-		$expected_heading = array_merge( $expected_heading, array( "location", "quantity", "model", "manufacturer", "image_name", "shipping", "price", "points", "date_added", "date_modified", "date_available", "weight", "weight_unit", "length", "width", "height", "length_unit", "status", "tax_class_id", "seo_keyword", "description") );
 		if ($exist_meta_title) {
 			$expected_heading[] = "meta_title";
 		}
@@ -3972,6 +4218,20 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function validateProductSEOKeywords( &$reader ) {
+		$data = $reader->getSheetByName( 'ProductSEOKeywords' );
+		if ($data==null) {
+			return true;
+		}
+		if (!$this->use_table_seo_url) {
+			throw new Exception( str_replace( '%1', 'ProductSEOKeywords', $this->language->get( 'error_seo_keywords_not_supported' ) ) );
+		}
+		$expected_heading = array( "product_id", "store_id", "keyword" );
+		$expected_multilingual = array( "keyword" );
+		return $this->validateHeading( $data, $expected_heading, $expected_multilingual );
+	}
+
+
 	protected function validateOptions( &$reader ) {
 		$data = $reader->getSheetByName( 'Options' );
 		if ($data==null) {
@@ -4073,6 +4333,9 @@ class ModelToolExportImport extends Model {
 		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'code'";
 		$query = $this->db->query( $sql );
 		$exist_code = ($query->num_rows > 0) ? true : false;
+		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'approved'";
+		$query = $this->db->query( $sql );
+		$exist_approved = ($query->num_rows > 0) ? true : false;
 
 		$expected_heading = array( "customer_id", "customer_group", "store_id", "firstname", "lastname", "email", "telephone", "fax", "password" );
 		if ($exist_salt) {
@@ -4082,7 +4345,10 @@ class ModelToolExportImport extends Model {
 		if ($exist_custom_field) {
 			$expected_heading[] = "custom_field";
 		}
-		$expected_heading = array_merge( $expected_heading, array( "ip", "status", "approved" ) );
+		$expected_heading = array_merge( $expected_heading, array( "ip", "status" ) );
+		if ($exist_approved) {
+			$expected_heading[] = "approved";
+		}
 		if ($exist_safe) {
 			$expected_heading[] = "safe";
 		}
@@ -4180,7 +4446,7 @@ class ModelToolExportImport extends Model {
 		}
 		
 		// make sure product_ids are numeric entries and are also mentioned in worksheet 'Products'
-		$worksheets = array( 'AdditionalImages', 'Specials', 'Discounts', 'Rewards', 'ProductOptions', 'ProductOptionValues', 'ProductAttributes', 'ProductFilters' );
+		$worksheets = array( 'AdditionalImages', 'Specials', 'Discounts', 'Rewards', 'ProductOptions', 'ProductOptionValues', 'ProductAttributes', 'ProductFilters', 'ProductSEOKeywords' );
 		foreach ($worksheets as $worksheet) {
 			$data = $reader->getSheetByName( $worksheet );
 			if ($data==null) {
@@ -4272,7 +4538,7 @@ class ModelToolExportImport extends Model {
 		}
 		
 		// make sure category_ids are numeric entries and are also mentioned in worksheet 'Categories'
-		$worksheets = array( 'CategoryFilters' );
+		$worksheets = array( 'CategoryFilters', 'CategorySEOKeywords' );
 		foreach ($worksheets as $worksheet) {
 			$data = $reader->getSheetByName( $worksheet );
 			if ($data==null) {
@@ -5202,7 +5468,7 @@ class ModelToolExportImport extends Model {
 
 
 	protected function validateStoreIds( &$reader ) {
-		$worksheets = array( 'Customers' );
+		$worksheets = array( 'Customers', 'CategorySEOKeywords', 'ProductSEOKeywords' );
 		$ok = true;
 		$store_ids = $this->getAvailableStoreIds();
 		foreach ($worksheets as $worksheet) {
@@ -5212,7 +5478,8 @@ class ModelToolExportImport extends Model {
 			}
 			$k = $data->getHighestRow();
 			for ($i=1; $i<$k; $i+=1) {
-				$store_id = $this->getCell($data,$i,3);
+				$j = ($worksheet=='Customers') ? 3 : 2;
+				$store_id = $this->getCell($data,$i,$j);
 				if (!$this->isInteger($store_id)) {
 					// Invalid store_id='...' used in worksheet '...'
 					$msg = $this->language->get( 'error_invalid_store_id' );
@@ -5253,9 +5520,235 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function validateCategorySEOUrls( &$reader, &$languages ) {
+		$ok = true;
+
+		// all category_id/store_id combinations must be unique
+		$data = $reader->getSheetByName( 'CategorySEOKeywords' );
+		if ($data==null) {
+			return true;
+		}
+		$category_id_store_id = array();
+		$k = $data->getHighestRow();
+		for ($i=1; $i<$k; $i+=1) {
+			$j = 1;
+			$category_id = $this->getCell($data,$i,$j);
+			if (!$this->isInteger($category_id)) {
+				continue;
+			}
+			$j += 1;
+			$store_id = $this->getCell($data,$i,$j);
+			if (!$this->isInteger($store_id)) {
+				continue;
+			}
+			if (!isset($category_id_store_id[$category_id])) {
+				$category_id_store_id[$category_id] = array();
+			}
+			if (!isset($category_id_store_id[$category_id][$store_id])) {
+				$category_id_store_id[$category_id][$store_id] = 0;
+			}
+			$category_id_store_id[$category_id][$store_id] += 1;
+		}
+		foreach ($category_id_store_id as $category_id=>$val1) {
+			foreach ($val1 as $store_id=>$val2) {
+				if ($val2 > 1) {
+					$msg = $this->language->get( 'error_multiple_category_id_store_id' );
+					$msg = str_replace( '%1', $category_id, $msg );
+					$msg = str_replace( '%2', $store_id, $msg );
+					$this->log->write( $msg );
+					$ok = false;
+				}
+			}
+		}
+		if (!$ok) {
+			return false;
+		}
+
+		// all keywords for each store_id must unique
+		$store_ids = $this->getAvailableStoreIds();
+		foreach ($store_ids as $next_store_id) {
+			$keyword_counts = array();
+			$k = $data->getHighestRow();
+			for ($i=1; $i<$k; $i+=1) {
+				$j = 1;
+				$category_id = $this->getCell($data,$i,$j);
+				if (!$this->isInteger($category_id)) {
+					continue;
+				}
+				$j += 1;
+				$store_id = $this->getCell($data,$i,$j);
+				if (!$this->isInteger($store_id)) {
+					continue;
+				}
+				if ($store_id != $next_store_id) {
+					continue;
+				}
+				foreach ($languages as $language) {
+					$j += 1;
+					$keyword = trim( $this->getCell($data,$i,$j,'') );
+					if ($keyword != '') {
+						if (!isset($keyword_counts[$keyword])) {
+							$keyword_counts[$keyword] = 0;
+						}
+						$keyword_counts[$keyword] += 1;
+					}
+				}
+			}
+			foreach ($keyword_counts as $keyword=>$count) {
+				if ($count > 1) {
+					$msg = $this->language->get( 'error_unique_keyword' );
+					$msg = str_replace( '%1', $keyword, $msg );
+					$msg = str_replace( '%2', $next_store_id, $msg );
+					$msg = str_replace( '%3', 'CategorySEOKeywords', $msg );
+					$this->log->write( $msg );
+					$ok = false;
+				}
+			}
+		}
+		
+		return $ok;
+	}
+
+
+	protected function validateProductSEOUrls( &$reader, &$languages ) {
+		$ok = true;
+
+		// all product_id/store_id combinations must be unique
+		$data = $reader->getSheetByName( 'ProductSEOKeywords' );
+		if ($data==null) {
+			return true;
+		}
+		$product_id_store_id = array();
+		$k = $data->getHighestRow();
+		for ($i=1; $i<$k; $i+=1) {
+			$j = 1;
+			$product_id = $this->getCell($data,$i,$j);
+			if (!$this->isInteger($product_id)) {
+				continue;
+			}
+			$j += 1;
+			$store_id = $this->getCell($data,$i,$j);
+			if (!$this->isInteger($store_id)) {
+				continue;
+			}
+			if (!isset($product_id_store_id[$product_id])) {
+				$product_id_store_id[$product_id] = array();
+			}
+			if (!isset($product_id_store_id[$product_id][$store_id])) {
+				$product_id_store_id[$product_id][$store_id] = 0;
+			}
+			$product_id_store_id[$product_id][$store_id] += 1;
+		}
+		foreach ($product_id_store_id as $product_id=>$val1) {
+			foreach ($val1 as $store_id=>$val2) {
+				if ($val2 > 1) {
+					$msg = $this->language->get( 'error_multiple_product_id_store_id' );
+					$msg = str_replace( '%1', $product_id, $msg );
+					$msg = str_replace( '%2', $store_id, $msg );
+					$this->log->write( $msg );
+					$ok = false;
+				}
+			}
+		}
+		if (!$ok) {
+			return false;
+		}
+
+		// all keywords for each store_id must unique
+		$store_ids = $this->getAvailableStoreIds();
+		foreach ($store_ids as $next_store_id) {
+			$keyword_counts = array();
+			$k = $data->getHighestRow();
+			for ($i=1; $i<$k; $i+=1) {
+				$j = 1;
+				$product_id = $this->getCell($data,$i,$j);
+				if (!$this->isInteger($product_id)) {
+					continue;
+				}
+				$j += 1;
+				$store_id = $this->getCell($data,$i,$j);
+				if (!$this->isInteger($store_id)) {
+					continue;
+				}
+				if ($store_id != $next_store_id) {
+					continue;
+				}
+				foreach ($languages as $language) {
+					$j += 1;
+					$keyword = trim( $this->getCell($data,$i,$j,'') );
+					if ($keyword != '') {
+						if (!isset($keyword_counts[$keyword])) {
+							$keyword_counts[$keyword] = 0;
+						}
+						$keyword_counts[$keyword] += 1;
+					}
+				}
+			}
+			foreach ($keyword_counts as $keyword=>$count) {
+				if ($count > 1) {
+					$msg = $this->language->get( 'error_unique_keyword' );
+					$msg = str_replace( '%1', $keyword, $msg );
+					$msg = str_replace( '%2', $next_store_id, $msg );
+					$msg = str_replace( '%3', 'ProductSEOKeywords', $msg );
+					$this->log->write( $msg );
+					$ok = false;
+				}
+			}
+		}
+		
+		return $ok;
+	}
+
+
+	protected function validateWorksheetNames( &$reader ) {
+		$allowed_worksheets = array(
+			'Categories',
+			'CategoryFilters',
+			'CategorySEOKeywords',
+			'Products',
+			'AdditionalImages',
+			'Specials',
+			'Discounts',
+			'Rewards',
+			'ProductOptions',
+			'ProductOptionValues',
+			'ProductAttributes',
+			'ProductFilters',
+			'ProductSEOKeywords',
+			'Options',
+			'OptionValues',
+			'AttributeGroups',
+			'Attributes',
+			'FilterGroups',
+			'Filters',
+			'Customers',
+			'Addresses'
+		);
+		$all_worksheets_ignored = true;
+		$worksheets = $reader->getSheetNames();
+		foreach ($worksheets as $worksheet) {
+			if (in_array($worksheet,$allowed_worksheets)) {
+				$all_worksheets_ignored = false;
+				break;
+			}
+		}
+		if ($all_worksheets_ignored) {
+			return false;
+		}
+		return true;
+	}
+
+
 	protected function validateUpload( &$reader )
 	{
 		$ok = true;
+		$languages = $this->getLanguages();
+
+		// make sure at least one of worksheet names is valid
+		if (!$this->validateWorksheetNames( $reader )) {
+			$this->log->write( $this->language->get( 'error_worksheets' ) );
+			$ok = false;
+		}
 
 		// worksheets must have correct heading rows
 		if (!$this->validateCategories( $reader )) {
@@ -5264,6 +5757,10 @@ class ModelToolExportImport extends Model {
 		}
 		if (!$this->validateCategoryFilters( $reader )) {
 			$this->log->write( $this->language->get('error_category_filters_header') );
+			$ok = false;
+		}
+		if (!$this->validateCategorySEOKeywords( $reader )) {
+			$this->log->write( $this->language->get('error_category_seo_keywords_header') );
 			$ok = false;
 		}
 		if (!$this->validateProducts( $reader )) {
@@ -5300,6 +5797,10 @@ class ModelToolExportImport extends Model {
 		}
 		if (!$this->validateProductFilters( $reader )) {
 			$this->log->write( $this->language->get('error_product_filters_header') );
+			$ok = false;
+		}
+		if (!$this->validateProductSEOKeywords( $reader )) {
+			$this->log->write( $this->language->get('error_product_seo_keywords_header') );
 			$ok = false;
 		}
 		if (!$this->validateOptions( $reader )) {
@@ -5339,6 +5840,7 @@ class ModelToolExportImport extends Model {
 		$names = $reader->getSheetNames();
 		$exist_categories = false;
 		$exist_category_filters = false;
+		$exist_category_seo_keywords = false;
 		$exist_product_options = false;
 		$exist_product_option_values = false;
 		$exist_products = false;
@@ -5348,6 +5850,7 @@ class ModelToolExportImport extends Model {
 		$exist_rewards = false;
 		$exist_product_attributes = false;
 		$exist_product_filters = false;
+		$exist_product_seo_keywords = false;
 		$exist_attribute_groups = false;
 		$exist_filters = false;
 		$exist_filter_groups = false;
@@ -5368,6 +5871,15 @@ class ModelToolExportImport extends Model {
 					$ok = false;
 				}
 				$exist_category_filters = true;
+				continue;
+			}
+			if ($name=='CategorySEOKeywords') {
+				if (!$exist_categories) {
+					// Missing Categories worksheet, or Categories worksheet not listed before CategorySEOKeywords
+					$this->log->write( $this->language->get('error_category_seo_keywords') );
+					$ok = false;
+				}
+				$exist_category_seo_keywords = true;
 				continue;
 			}
 			if ($name=='Products') {
@@ -5462,6 +5974,15 @@ class ModelToolExportImport extends Model {
 					$ok = false;
 				}
 				$exist_product_filters = true;
+				continue;
+			}
+			if ($name=='ProductSEOKeywords') {
+				if (!$exist_products) {
+					// Missing Products worksheet, or Products worksheet not listed before ProductSEOKeywords
+					$this->log->write( $this->language->get('error_product_seo_keywords') );
+					$ok = false;
+				}
+				$exist_product_seo_keywords = true;
 				continue;
 			}
 			if ($name=='FilterGroups') {
@@ -5582,6 +6103,16 @@ class ModelToolExportImport extends Model {
 			$ok = false;
 		}
 		
+		if ($this->use_table_seo_url) {
+			if (!$this->validateCategorySEOUrls( $reader, $languages )) {
+				$ok = false;
+			}
+
+			if (!$this->validateProductSEOUrls( $reader, $languages )) {
+				$ok = false;
+			}
+		}
+
 		return $ok;
 	}
 
@@ -5601,9 +6132,10 @@ class ModelToolExportImport extends Model {
 		try {
 			$this->session->data['export_import_nochange'] = 1;
 
-			// we use the PHPExcel package from http://phpexcel.codeplex.com/
+			// we use the PHPExcel package from https://github.com/PHPOffice/PHPExcel
 			$cwd = getcwd();
-			chdir( DIR_SYSTEM.'PHPExcel' );
+			$dir = version_compare(VERSION,'3.0','>=') ? 'library/export_import' : 'PHPExcel';
+			chdir( DIR_SYSTEM.$dir );
 			require_once( 'Classes/PHPExcel.php' );
 			chdir( $cwd );
 			
@@ -5634,6 +6166,7 @@ class ModelToolExportImport extends Model {
 			$available_customer_ids = array();
 			$this->uploadCategories( $reader, $incremental, $available_category_ids );
 			$this->uploadCategoryFilters( $reader, $incremental, $available_category_ids );
+			$this->uploadCategorySEOKeywords( $reader, $incremental, $available_category_ids );
 			$this->uploadProducts( $reader, $incremental, $available_product_ids );
 			$this->uploadAdditionalImages( $reader, $incremental, $available_product_ids );
 			$this->uploadSpecials( $reader, $incremental, $available_product_ids );
@@ -5643,6 +6176,7 @@ class ModelToolExportImport extends Model {
 			$this->uploadProductOptionValues( $reader, $incremental, $available_product_ids );
 			$this->uploadProductAttributes( $reader, $incremental, $available_product_ids );
 			$this->uploadProductFilters( $reader, $incremental, $available_product_ids );
+			$this->uploadProductSEOKeywords( $reader, $incremental, $available_product_ids );
 			$this->uploadOptions( $reader, $incremental );
 			$this->uploadOptionValues( $reader, $incremental );
 			$this->uploadAttributeGroups( $reader, $incremental );
@@ -5770,9 +6304,13 @@ class ModelToolExportImport extends Model {
 	}
 
 
-	protected function getCategories( &$languages, $exist_meta_title, $offset=null, $rows=null, $min_id=null, $max_id=null ) {
-		$sql  = "SELECT c.*, ua.keyword FROM `".DB_PREFIX."category` c ";
-		$sql .= "LEFT JOIN `".DB_PREFIX."url_alias` ua ON ua.query=CONCAT('category_id=',c.category_id) ";
+	protected function getCategories( &$languages, $exist_meta_title, $exist_seo_url_table, $offset=null, $rows=null, $min_id=null, $max_id=null ) {
+		if ($exist_seo_url_table) {
+			$sql  = "SELECT c.* FROM `".DB_PREFIX."category` c ";
+		} else {
+			$sql  = "SELECT c.*, ua.keyword FROM `".DB_PREFIX."category` c ";
+			$sql .= "LEFT JOIN `".DB_PREFIX."url_alias` ua ON ua.query=CONCAT('category_id=',c.category_id) ";
+		}
 		if (isset($min_id) && isset($max_id)) {
 			$sql .= "WHERE c.category_id BETWEEN $min_id AND $max_id ";
 		}
@@ -5819,6 +6357,9 @@ class ModelToolExportImport extends Model {
 		$query = $this->db->query( $sql );
 		$exist_meta_title = ($query->num_rows > 0) ? true : false;
 
+		// Opencart versions from 3.0 onwards use the seo_url DB table
+		$exist_seo_url_table = $this->use_table_seo_url;
+
 		// Set the column widths
 		$j = 0;
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(strlen('category_id')+1);
@@ -5832,7 +6373,9 @@ class ModelToolExportImport extends Model {
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('image_name'),12)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('date_added'),19)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('date_modified'),19)+1);
-		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('seo_keyword'),16)+1);
+		if (!$exist_seo_url_table) {
+			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('seo_keyword'),16)+1);
+		}
 		foreach ($languages as $language) {
 			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('description'),32)+1);
 		}
@@ -5874,8 +6417,10 @@ class ModelToolExportImport extends Model {
 		$data[$j++] = 'date_added';
 		$styles[$j] = &$text_format;
 		$data[$j++] = 'date_modified';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'seo_keyword';
+		if (!$exist_seo_url_table) {
+			$styles[$j] = &$text_format;
+			$data[$j++] = 'seo_keyword';
+		}
 		foreach ($languages as $language) {
 			$styles[$j] = &$text_format;
 			$data[$j++] = 'description('.$language['code'].')';
@@ -5911,7 +6456,7 @@ class ModelToolExportImport extends Model {
 		$j = 0;
 		$store_ids = $this->getStoreIdsForCategories();
 		$layouts = $this->getLayoutsForCategories();
-		$categories = $this->getCategories( $languages, $exist_meta_title, $offset, $rows, $min_id, $max_id );
+		$categories = $this->getCategories( $languages, $exist_meta_title, $exist_seo_url_table, $offset, $rows, $min_id, $max_id );
 		$len = count($categories);
 		$min_id = ($len>0) ? $categories[0]['category_id'] : 0;
 		$max_id = ($len>0) ? $categories[$len-1]['category_id'] : 0;
@@ -5929,7 +6474,9 @@ class ModelToolExportImport extends Model {
 			$data[$j++] = $row['image'];
 			$data[$j++] = $row['date_added'];
 			$data[$j++] = $row['date_modified'];
-			$data[$j++] = $row['keyword'];
+			if (!$exist_seo_url_table) {
+				$data[$j++] = $row['keyword'];
+			}
 			foreach ($languages as $language) {
 				$data[$j++] = html_entity_decode($row['description'][$language['code']],ENT_QUOTES,'UTF-8');
 			}
@@ -6094,6 +6641,89 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function getCategorySEOKeywords( &$languages, $min_id, $max_id ) {
+		$sql  = "SELECT * FROM `".DB_PREFIX."seo_url` ";
+		$sql .= "WHERE query LIKE 'category_id=%' AND ";
+		$sql .= "CAST(SUBSTRING(query FROM 13) AS UNSIGNED INTEGER) >= '".(int)$min_id."' AND ";
+		$sql .= "CAST(SUBSTRING(query FROM 13) AS UNSIGNED INTEGER) <= '".(int)$max_id."' ";
+		$sql .= "ORDER BY CAST(SUBSTRING(query FROM 13) AS UNSIGNED INTEGER), store_id, language_id";
+		$query = $this->db->query( $sql );
+		$seo_keywords = array();
+		foreach ($query->rows as $row) {
+			$category_id = (int)substr($row['query'],12);
+			$store_id = (int)$row['store_id'];
+			$language_id = (int)$row['language_id'];
+			if (!isset($seo_keywords[$category_id])) {
+				$seo_keywords[$category_id] = array();
+			}
+			if (!isset($seo_keywords[$category_id][$store_id])) {
+				$seo_keywords[$category_id][$store_id] = array();
+			}
+			$seo_keywords[$category_id][$store_id][$language_id] = $row['keyword'];
+		}
+		$results = array();
+		foreach ($seo_keywords as $category_id=>$val1) {
+			foreach ($val1 as $store_id=>$val2) {
+				$keyword = array();
+				foreach ($languages as $language) {
+					$language_id = $language['language_id'];
+					$language_code = $language['code'];
+					$keyword[$language_code] = isset($val2[$language_id]) ? $val2[$language_id] : '';
+				}
+				$results[] = array(
+					'category_id'   => $category_id,
+					'store_id'      => $store_id,
+					'keyword'       => $keyword
+				);
+			}
+		}
+		return $results;
+	}
+
+
+	protected function populateCategorySEOKeywordsWorksheet( &$worksheet, &$languages, &$box_format, &$text_format, $min_id=null, $max_id=null ) {
+		// Set the column widths
+		$j = 0;
+		$worksheet->getColumnDimensionByColumn($j++)->setWidth(strlen('category_id')+1);
+		$worksheet->getColumnDimensionByColumn($j++)->setWidth(strlen('store_id')+1);
+		foreach ($languages as $language) {
+			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('keyword')+4,30)+1);
+		}
+
+		// The heading row and column styles
+		$styles = array();
+		$data = array();
+		$i = 1;
+		$j = 0;
+		$data[$j++] = 'category_id';
+		$data[$j++] = 'store_id';
+		foreach ($languages as $language) {
+			$styles[$j] = &$text_format;
+			$data[$j++] = 'keyword('.$language['code'].')';
+		}
+		$worksheet->getRowDimension($i)->setRowHeight(30);
+		$this->setCellRow( $worksheet, $i, $data, $box_format );
+		
+		// The actual category SEO keywords data
+		$i += 1;
+		$j = 0;
+		$category_seo_keywords = $this->getCategorySEOKeywords( $languages, $min_id, $max_id );
+		foreach ($category_seo_keywords as $row) {
+			$worksheet->getRowDimension($i)->setRowHeight(26);
+			$data = array();
+			$data[$j++] = $row['category_id'];
+			$data[$j++] = $row['store_id'];
+			foreach ($languages as $language) {
+				$data[$j++] = html_entity_decode($row['keyword'][$language['code']],ENT_QUOTES,'UTF-8');
+			}
+			$this->setCellRow( $worksheet, $i, $data, $this->null_array, $styles );
+			$i += 1;
+			$j = 0;
+		}
+
+	}
+
+
 	protected function getStoreIdsForProducts() {
 		$sql =  "SELECT product_id, store_id FROM `".DB_PREFIX."product_to_store` ps;";
 		$store_ids = array();
@@ -6148,8 +6778,16 @@ class ModelToolExportImport extends Model {
 			if ($exist_table_product_tag) {
 				$sql .= "LEFT JOIN `".DB_PREFIX."product_tag` pt ON pt.product_id=p.product_id AND pt.language_id='".(int)$language_id."' ";
 			}
+			if ($this->posted_categories) {
+				$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=p.product_id ";
+			}
 			if (isset($min_id) && isset($max_id)) {
 				$sql .= "WHERE p.product_id BETWEEN $min_id AND $max_id ";
+				if ($this->posted_categories) {
+					$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+				}
+			} else if ($this->posted_categories) {
+				$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 			}
 			$sql .= "GROUP BY p.product_id ";
 			$sql .= "ORDER BY p.product_id ";
@@ -6165,19 +6803,11 @@ class ModelToolExportImport extends Model {
 	}
 
 
-	protected function getProducts( &$languages, $default_language_id, $product_fields, $exist_meta_title, $offset=null, $rows=null, $min_id=null, $max_id=null ) {
+	protected function getProducts( &$languages, $default_language_id, $product_fields, $exist_meta_title, $exist_seo_url_table, $offset=null, $rows=null, $min_id=null, $max_id=null ) {
 		$sql  = "SELECT ";
 		$sql .= "  p.product_id,";
 		$sql .= "  GROUP_CONCAT( DISTINCT CAST(pc.category_id AS CHAR(11)) SEPARATOR \",\" ) AS categories,";
         $sql .= "  p.sku,";
-        $sql .= "  p.size,";
-        $sql .= "  p.oe,";
-        $sql .= "  p.obd,";
-        $sql .= "  p.osd,";
-        $sql .= "  p.w,";
-		$sql .= "  p.a,";
-        $sql .= "  p.b,";
-        $sql .= "  p.l,";
 		$sql .= "  p.upc,";
 		if (in_array( 'ean', $product_fields )) {
 			$sql .= "  p.ean,";
@@ -6190,29 +6820,6 @@ class ModelToolExportImport extends Model {
 		}
 		if (in_array('mpn',$product_fields)) {
 			$sql .= "  p.mpn,";
-		}
-		if (in_array('o',$product_fields)) {
-			$sql .= "  p.o,";
-		}
-		if (in_array('articul_dop',$product_fields)) {
-			$sql .= "  p.articul_dop,";
-		}
-		if (in_array('d1',$product_fields)) {
-			$sql .= "  p.d1,";
-		}
-		if (in_array('norma',$product_fields)) {
-			$sql .= "  p.norma,";
-		}
-		if (in_array('range',$product_fields)) {
-			$sql .= "  p.range,";
-		}
-		if (in_array('color',$product_fields)) {
-			$sql .= "  p.color,";
-		}
-		if (in_array('name_short',$product_fields)) {
-			$sql .= "  p.name_short,";
-		}if (in_array('thickness',$product_fields)) {
-			$sql .= "  p.thickness,";
 		}
 		$sql .= "  p.location,";
 		$sql .= "  p.quantity,";
@@ -6233,7 +6840,9 @@ class ModelToolExportImport extends Model {
 		$sql .= "  p.status,";
 		$sql .= "  p.tax_class_id,";
 		$sql .= "  p.sort_order,";
-		$sql .= "  ua.keyword,";
+		if (!$exist_seo_url_table) {
+			$sql .= "  ua.keyword,";
+		}
 		$sql .= "  p.stock_status_id, ";
 		$sql .= "  mc.unit AS length_unit, ";
 		$sql .= "  p.subtract, ";
@@ -6241,7 +6850,12 @@ class ModelToolExportImport extends Model {
 		$sql .= "  GROUP_CONCAT( DISTINCT CAST(pr.related_id AS CHAR(11)) SEPARATOR \",\" ) AS related ";
 		$sql .= "FROM `".DB_PREFIX."product` p ";
 		$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON p.product_id=pc.product_id ";
-		$sql .= "LEFT JOIN `".DB_PREFIX."url_alias` ua ON ua.query=CONCAT('product_id=',p.product_id) ";
+		if ($this->posted_categories) {
+			$sql .= " LEFT JOIN `".DB_PREFIX."product_to_category` pc2 ON p.product_id=pc2.product_id ";
+		}
+		if (!$exist_seo_url_table) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."url_alias` ua ON ua.query=CONCAT('product_id=',p.product_id) ";
+		}
 		$sql .= "LEFT JOIN `".DB_PREFIX."manufacturer` m ON m.manufacturer_id = p.manufacturer_id ";
 		$sql .= "LEFT JOIN `".DB_PREFIX."weight_class_description` wc ON wc.weight_class_id = p.weight_class_id ";
 		$sql .= "  AND wc.language_id=$default_language_id ";
@@ -6250,6 +6864,11 @@ class ModelToolExportImport extends Model {
 		$sql .= "LEFT JOIN `".DB_PREFIX."product_related` pr ON pr.product_id=p.product_id ";
 		if (isset($min_id) && isset($max_id)) {
 			$sql .= "WHERE p.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc2.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc2.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "GROUP BY p.product_id ";
 		$sql .= "ORDER BY p.product_id ";
@@ -6303,6 +6922,9 @@ class ModelToolExportImport extends Model {
 		$query = $this->db->query( $sql );
 		$exist_meta_title = ($query->num_rows > 0) ? true : false;
 
+		// Opencart versions from 3.0 onwards use the seo_url DB table
+		$exist_seo_url_table = $this->use_table_seo_url;
+
 		// Set the column widths
 		$j = 0;
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('product_id'),4)+1);
@@ -6311,16 +6933,8 @@ class ModelToolExportImport extends Model {
 		}
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('categories'),12)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('main_category'),4)+1); //added
-		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('sku'),64)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('size'),40)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('oe'),12)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('obd'),64)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('osd'),64)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('w'),12)+1);
-		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('a'),12)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('b'),12)+1);
-        $worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('l'),12)+1);
-		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('upc'),64)+1);
+		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('sku'),10)+1);
+		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('upc'),12)+1);
 		if (in_array('ean',$product_fields)) {
 			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('ean'),14)+1);
 		}
@@ -6332,30 +6946,6 @@ class ModelToolExportImport extends Model {
 		}
 		if (in_array('mpn',$product_fields)) {
 			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('mpn'),15)+1);
-		}
-		if (in_array('o',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('o'),15)+1);
-		}
-		if (in_array('articul_dop',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('articul_dop'),15)+1);
-		}
-		if (in_array('d1',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('d1'),15)+1);
-		}
-		if (in_array('norma',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('norma'),15)+1);
-		}
-		if (in_array('range',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('range'),15)+1);
-		}
-		if (in_array('color',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('color'),15)+1);
-		}
-		if (in_array('name_short',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('name_short'),64)+1);
-		}
-		if (in_array('thickness',$product_fields)) {
-			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('thickness'),12)+1);
 		}
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('location'),10)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('quantity'),4)+1);
@@ -6376,7 +6966,9 @@ class ModelToolExportImport extends Model {
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('length_unit'),3)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('status'),5)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('tax_class_id'),2)+1);
-		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('seo_keyword'),16)+1);
+		if (!$exist_seo_url_table) {
+			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('seo_keyword'),16)+1);
+		}
 		foreach ($languages as $language) {
 			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('description')+4,32)+1);
 		}
@@ -6406,124 +6998,6 @@ class ModelToolExportImport extends Model {
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('minimum'),8)+1);
 
 		// The product headings row and column styles
-	  /*$styles = array();
-		$data = array();
-		$i = 1;
-		$j = 0;
-		$data[$j++] = 'product_id';
-		foreach ($languages as $language) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'name('.$language['code'].')';
-		}
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'categories';
-		$data[$j++] = 'main_category'; //added
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'articul';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'size';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'ØE';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'ØD';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'Ød';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'W';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'B';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'L';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'standart';
-		if (in_array('ean',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'L1';
-		}
-		if (in_array('jan',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'L2';
-		}
-		if (in_array('isbn',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'H';
-		}
-		if (in_array('mpn',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'T';
-		}
-		if (in_array('o',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'Ø';
-		}
-		if (in_array('articul_dop',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'articul_dop';
-		}
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'location';
-		$data[$j++] = 'quantity';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'model';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'manufacturer';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'image_name';
-		$data[$j++] = 'shipping';
-		$styles[$j] = &$price_format;
-		$data[$j++] = 'price';
-		$data[$j++] = 'points';
-		$data[$j++] = 'date_added';
-		$data[$j++] = 'date_modified';
-		$data[$j++] = 'date_available';
-		$styles[$j] = &$weight_format;
-		$data[$j++] = 'weight';
-		$data[$j++] = 'weight_unit';
-		$data[$j++] = 'length';
-		$data[$j++] = 'width';
-		$data[$j++] = 'height';
-		$data[$j++] = 'length_unit';
-		$data[$j++] = 'status';
-		$data[$j++] = 'tax_class_id';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'seo_keyword';
-		foreach ($languages as $language) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'description('.$language['code'].')';
-		}
-		if ($exist_meta_title) {
-			foreach ($languages as $language) {
-				$styles[$j] = &$text_format;
-				$data[$j++] = 'meta_title('.$language['code'].')';
-			}
-		}
-		foreach ($languages as $language) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'meta_description('.$language['code'].')';
-		}
-        foreach ($languages as $language) { //added
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'meta_h1('.$language['code'].')';
-		} //added
-		foreach ($languages as $language) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'meta_keywords('.$language['code'].')';
-		}
-		$data[$j++] = 'stock_status_id';
-		$data[$j++] = 'store_ids';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'layout';
-		$data[$j++] = 'related_ids';
-		foreach ($languages as $language) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'tags('.$language['code'].')';
-		}
-		$data[$j++] = 'sort_order';
-		$data[$j++] = 'subtract';
-		$data[$j++] = 'minimum';
-		$worksheet->getRowDimension($i)->setRowHeight(30);
-		$this->setCellRow( $worksheet, $i, $data, $box_format );*/
-		
 		$styles = array();
 		$data = array();
 		$i = 1;
@@ -6538,22 +7012,6 @@ class ModelToolExportImport extends Model {
 		$data[$j++] = 'main_category'; //added
 		$styles[$j] = &$text_format;
 		$data[$j++] = 'sku';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'size';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'oe';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'obd';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'osd';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'w';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'a';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'b';
-        $styles[$j] = &$text_format;
-		$data[$j++] = 'l';
 		$styles[$j] = &$text_format;
 		$data[$j++] = 'upc';
 		if (in_array('ean',$product_fields)) {
@@ -6572,38 +7030,6 @@ class ModelToolExportImport extends Model {
 			$styles[$j] = &$text_format;
 			$data[$j++] = 'mpn';
 		}
-		if (in_array('o',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'o';
-		}
-		if (in_array('articul_dop',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'articul_dop';
-		}
-		if (in_array('d1',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'd1';
-		}
-		if (in_array('norma',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'norma';
-		}
-		if (in_array('range',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'range';
-		}
-		if (in_array('color',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'color';
-		}
-		if (in_array('name_short',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'name_short';
-		}
-		if (in_array('thickness',$product_fields)) {
-			$styles[$j] = &$text_format;
-			$data[$j++] = 'thickness';
-		}
 		$styles[$j] = &$text_format;
 		$data[$j++] = 'location';
 		$data[$j++] = 'quantity';
@@ -6629,8 +7055,10 @@ class ModelToolExportImport extends Model {
 		$data[$j++] = 'length_unit';
 		$data[$j++] = 'status';
 		$data[$j++] = 'tax_class_id';
-		$styles[$j] = &$text_format;
-		$data[$j++] = 'seo_keyword';
+		if (!$exist_seo_url_table) {
+			$styles[$j] = &$text_format;
+			$data[$j++] = 'seo_keyword';
+		}
 		foreach ($languages as $language) {
 			$styles[$j] = &$text_format;
 			$data[$j++] = 'description('.$language['code'].')';
@@ -6667,13 +7095,13 @@ class ModelToolExportImport extends Model {
 		$data[$j++] = 'minimum';
 		$worksheet->getRowDimension($i)->setRowHeight(30);
 		$this->setCellRow( $worksheet, $i, $data, $box_format );
-		
+
 		// The actual products data
 		$i += 1;
 		$j = 0;
 		$store_ids = $this->getStoreIdsForProducts();
 		$layouts = $this->getLayoutsForProducts();
-		$products = $this->getProducts( $languages, $default_language_id, $product_fields, $exist_meta_title, $offset, $rows, $min_id, $max_id );
+		$products = $this->getProducts( $languages, $default_language_id, $product_fields, $exist_meta_title, $exist_seo_url_table, $offset, $rows, $min_id, $max_id );
 		$len = count($products);
 		$min_id = ($len>0) ? $products[0]['product_id'] : 0;
 		$max_id = ($len>0) ? $products[$len-1]['product_id'] : 0;
@@ -6682,7 +7110,6 @@ class ModelToolExportImport extends Model {
             $main_category = $main_category_query->num_rows ? (int)$main_category_query->row['category_id'] : ''; //added
 			$data = array();
 			$worksheet->getRowDimension($i)->setRowHeight(26);
-			
 			$product_id = $row['product_id'];
 			$data[$j++] = $product_id;
 			foreach ($languages as $language) {
@@ -6691,14 +7118,6 @@ class ModelToolExportImport extends Model {
 			$data[$j++] = $row['categories'];
 			$data[$j++] = $main_category; //added
 			$data[$j++] = $row['sku'];
-            $data[$j++] = $row['size'];
-            $data[$j++] = $row['oe'];
-            $data[$j++] = $row['obd'];
-            $data[$j++] = $row['osd'];
-            $data[$j++] = $row['w'];
-			$data[$j++] = $row['a'];
-            $data[$j++] = $row['b'];
-            $data[$j++] = $row['l'];
 			$data[$j++] = $row['upc'];
 			if (in_array('ean',$product_fields)) {
 				$data[$j++] = $row['ean'];
@@ -6711,30 +7130,6 @@ class ModelToolExportImport extends Model {
 			}
 			if (in_array('mpn',$product_fields)) {
 				$data[$j++] = $row['mpn'];
-			}
-			if (in_array('o',$product_fields)) {
-				$data[$j++] = $row['o'];
-			}
-			if (in_array('articul_dop',$product_fields)) {
-				$data[$j++] = $row['articul_dop'];
-			}
-			if (in_array('d1',$product_fields)) {
-				$data[$j++] = $row['d1'];
-			}
-			if (in_array('norma',$product_fields)) {
-				$data[$j++] = $row['norma'];
-			}
-			if (in_array('range',$product_fields)) {
-				$data[$j++] = $row['range'];
-			}
-			if (in_array('color',$product_fields)) {
-				$data[$j++] = $row['color'];
-			}
-			if (in_array('name_short',$product_fields)) {
-				$data[$j++] = $row['name_short'];
-			}
-			if (in_array('thickness',$product_fields)) {
-				$data[$j++] = $row['thickness'];
 			}
 			$data[$j++] = $row['location'];
 			$data[$j++] = $row['quantity'];
@@ -6755,7 +7150,9 @@ class ModelToolExportImport extends Model {
 			$data[$j++] = $row['length_unit'];
 			$data[$j++] = ($row['status']==0) ? 'false' : 'true';
 			$data[$j++] = $row['tax_class_id'];
-			$data[$j++] = ($row['keyword']) ? $row['keyword'] : '';
+			if (!$exist_seo_url_table) {
+				$data[$j++] = ($row['keyword']) ? $row['keyword'] : '';
+			}
 			foreach ($languages as $language) {
 				$data[$j++] = html_entity_decode($row['description'][$language['code']],ENT_QUOTES,'UTF-8');
 			}
@@ -6804,13 +7201,21 @@ class ModelToolExportImport extends Model {
 
 	protected function getAdditionalImages( $min_id=null, $max_id=null, $exist_sort_order=true  ) {
 		if ($exist_sort_order) {
-			$sql  = "SELECT product_id, image, sort_order ";
+			$sql  = "SELECT DISTINCT pi.product_id, pi.image, pi.sort_order ";
 		} else {
-			$sql  = "SELECT product_id, image ";
+			$sql  = "SELECT DISTINCT pi.product_id, pi.image ";
 		}
-		$sql .= "FROM `".DB_PREFIX."product_image` ";
+		$sql .= "FROM `".DB_PREFIX."product_image` pi ";
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=pi.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
-			$sql .= "WHERE product_id BETWEEN $min_id AND $max_id ";
+			$sql .= "WHERE pi.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		if ($exist_sort_order) {
 			$sql .= "ORDER BY product_id, sort_order, image;";
@@ -6877,7 +7282,7 @@ class ModelToolExportImport extends Model {
 		$exist_table_customer_group_description = ($query->num_rows > 0);
 
 		// get the product specials
-		$sql  = "SELECT ps.*, ";
+		$sql  = "SELECT DISTINCT ps.*, ";
 		$sql .= ($exist_table_customer_group_description) ? "cgd.name " : "cg.name ";
 		$sql .= "FROM `".DB_PREFIX."product_special` ps ";
 		if ($exist_table_customer_group_description) {
@@ -6886,8 +7291,16 @@ class ModelToolExportImport extends Model {
 		} else {
 			$sql .= "LEFT JOIN `".DB_PREFIX."customer_group` cg ON cg.customer_group_id=ps.customer_group_id ";
 		}
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=ps.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
 			$sql .= "WHERE ps.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "ORDER BY ps.product_id, name, ps.priority";
 		$result = $this->db->query( $sql );
@@ -6957,8 +7370,16 @@ class ModelToolExportImport extends Model {
 		} else {
 			$sql .= "LEFT JOIN `".DB_PREFIX."customer_group` cg ON cg.customer_group_id=pd.customer_group_id ";
 		}
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=pd.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
 			$sql .= "WHERE pd.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "ORDER BY pd.product_id ASC, name ASC, pd.quantity ASC";
 		$result = $this->db->query( $sql );
@@ -7031,8 +7452,16 @@ class ModelToolExportImport extends Model {
 		} else {
 			$sql .= "LEFT JOIN `".DB_PREFIX."customer_group` cg ON cg.customer_group_id=pr.customer_group_id ";
 		}
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=pr.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
 			$sql .= "WHERE pr.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "ORDER BY pr.product_id, name";
 		$result = $this->db->query( $sql );
@@ -7091,12 +7520,20 @@ class ModelToolExportImport extends Model {
 		} else {
 			$sql  = "SELECT p.product_id, po.option_id, po.option_value, po.required, od.name AS `option` FROM ";
 		}
-		$sql .= "( SELECT product_id ";
-		$sql .= "  FROM `".DB_PREFIX."product` ";
-		if (isset($min_id) && isset($max_id)) {
-			$sql .= "  WHERE product_id BETWEEN $min_id AND $max_id ";
+		$sql .= "( SELECT p1.product_id ";
+		$sql .= "  FROM `".DB_PREFIX."product` p1 ";
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=p1.product_id ";
 		}
-		$sql .= "  ORDER BY product_id ASC ";
+		if (isset($min_id) && isset($max_id)) {
+			$sql .= "  WHERE p1.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
+		}
+		$sql .= "  ORDER BY p1.product_id ASC ";
 		$sql .= ") AS p ";
 		$sql .= "INNER JOIN `".DB_PREFIX."product_option` po ON po.product_id=p.product_id ";
 		$sql .= "INNER JOIN `".DB_PREFIX."option_description` od ON od.option_id=po.option_id AND od.language_id='".(int)$language_id."' ";
@@ -7164,10 +7601,18 @@ class ModelToolExportImport extends Model {
 		$sql .= "  p.product_id, pov.option_id, pov.option_value_id, pov.quantity, pov.subtract, od.name AS `option`, ovd.name AS option_value, ";
 		$sql .= "  pov.price, pov.price_prefix, pov.points, pov.points_prefix, pov.weight, pov.weight_prefix ";
 		$sql .= "FROM ";
-		$sql .= "( SELECT product_id ";
-		$sql .= "  FROM `".DB_PREFIX."product` ";
+		$sql .= "( SELECT p1.product_id ";
+		$sql .= "  FROM `".DB_PREFIX."product` p1 ";
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=p1.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
-			$sql .= "  WHERE product_id BETWEEN $min_id AND $max_id ";
+			$sql .= "  WHERE p1.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "  ORDER BY product_id ASC ";
 		$sql .= ") AS p ";
@@ -7267,6 +7712,95 @@ class ModelToolExportImport extends Model {
 	}
 
 
+	protected function getProductSEOKeywords( &$languages, $min_id, $max_id ) {
+		$sql  = "SELECT s.* FROM `".DB_PREFIX."seo_url` s ";
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=CAST(SUBSTRING(s.query FROM 12) AS UNSIGNED INTEGER) ";
+		}
+		$sql .= "WHERE s.query LIKE 'product_id=%' AND ";
+		if ($this->posted_categories) {
+			$sql .= "pc.category_id IN ".$this->posted_categories." AND ";
+		}
+		$sql .= "CAST(SUBSTRING(s.query FROM 12) AS UNSIGNED INTEGER) >= '".(int)$min_id."' AND ";
+		$sql .= "CAST(SUBSTRING(s.query FROM 12) AS UNSIGNED INTEGER) <= '".(int)$max_id."' ";
+		$sql .= "ORDER BY CAST(SUBSTRING(s.query FROM 12) AS UNSIGNED INTEGER), s.store_id, s.language_id";
+		$query = $this->db->query( $sql );
+		$seo_keywords = array();
+		foreach ($query->rows as $row) {
+			$product_id = (int)substr($row['query'],11);
+			$store_id = (int)$row['store_id'];
+			$language_id = (int)$row['language_id'];
+			if (!isset($seo_keywords[$product_id])) {
+				$seo_keywords[$product_id] = array();
+			}
+			if (!isset($seo_keywords[$product_id][$store_id])) {
+				$seo_keywords[$product_id][$store_id] = array();
+			}
+			$seo_keywords[$product_id][$store_id][$language_id] = $row['keyword'];
+		}
+		$results = array();
+		foreach ($seo_keywords as $product_id=>$val1) {
+			foreach ($val1 as $store_id=>$val2) {
+				$keyword = array();
+				foreach ($languages as $language) {
+					$language_id = $language['language_id'];
+					$language_code = $language['code'];
+					$keyword[$language_code] = isset($val2[$language_id]) ? $val2[$language_id] : '';
+				}
+				$results[] = array(
+					'product_id'    => $product_id,
+					'store_id'      => $store_id,
+					'keyword'       => $keyword
+				);
+			}
+		}
+		return $results;
+	}
+
+
+	protected function populateProductSEOKeywordsWorksheet( &$worksheet, &$languages, &$box_format, &$text_format, $min_id=null, $max_id=null ) {
+		// Set the column widths
+		$j = 0;
+		$worksheet->getColumnDimensionByColumn($j++)->setWidth(strlen('product_id')+1);
+		$worksheet->getColumnDimensionByColumn($j++)->setWidth(strlen('store_id')+1);
+		foreach ($languages as $language) {
+			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('keyword')+4,30)+1);
+		}
+
+		// The heading row and column styles
+		$styles = array();
+		$data = array();
+		$i = 1;
+		$j = 0;
+		$data[$j++] = 'product_id';
+		$data[$j++] = 'store_id';
+		foreach ($languages as $language) {
+			$styles[$j] = &$text_format;
+			$data[$j++] = 'keyword('.$language['code'].')';
+		}
+		$worksheet->getRowDimension($i)->setRowHeight(30);
+		$this->setCellRow( $worksheet, $i, $data, $box_format );
+		
+		// The actual product SEO keywords data
+		$i += 1;
+		$j = 0;
+		$product_seo_keywords = $this->getProductSEOKeywords( $languages, $min_id, $max_id );
+		foreach ($product_seo_keywords as $row) {
+			$worksheet->getRowDimension($i)->setRowHeight(26);
+			$data = array();
+			$data[$j++] = $row['product_id'];
+			$data[$j++] = $row['store_id'];
+			foreach ($languages as $language) {
+				$data[$j++] = html_entity_decode($row['keyword'][$language['code']],ENT_QUOTES,'UTF-8');
+			}
+			$this->setCellRow( $worksheet, $i, $data, $this->null_array, $styles );
+			$i += 1;
+			$j = 0;
+		}
+
+	}
+
+
 	protected function getAttributeGroupNames( $language_id ) {
 		$sql  = "SELECT attribute_group_id, name ";
 		$sql .= "FROM `".DB_PREFIX."attribute_group_description` ";
@@ -7304,8 +7838,16 @@ class ModelToolExportImport extends Model {
 		$sql .= "FROM `".DB_PREFIX."product_attribute` pa ";
 		$sql .= "INNER JOIN `".DB_PREFIX."attribute` a ON a.attribute_id=pa.attribute_id ";
 		$sql .= "INNER JOIN `".DB_PREFIX."attribute_group` ag ON ag.attribute_group_id=a.attribute_group_id ";
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=pa.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
-			$sql .= "WHERE product_id BETWEEN $min_id AND $max_id ";
+			$sql .= "WHERE pa.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "ORDER BY pa.product_id ASC, ag.attribute_group_id ASC, pa.attribute_id ASC";
 		$query = $this->db->query( $sql );
@@ -7426,8 +7968,16 @@ class ModelToolExportImport extends Model {
 		$sql .= "FROM `".DB_PREFIX."product_filter` pf ";
 		$sql .= "INNER JOIN `".DB_PREFIX."filter` f ON f.filter_id=pf.filter_id ";
 		$sql .= "INNER JOIN `".DB_PREFIX."filter_group` fg ON fg.filter_group_id=f.filter_group_id ";
+		if ($this->posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=pf.product_id ";
+		}
 		if (isset($min_id) && isset($max_id)) {
-			$sql .= "WHERE product_id BETWEEN $min_id AND $max_id ";
+			$sql .= "WHERE pf.product_id BETWEEN $min_id AND $max_id ";
+			if ($this->posted_categories) {
+				$sql .= "AND pc.category_id IN ".$this->posted_categories." ";
+			}
+		} else if ($this->posted_categories) {
+			$sql .= "WHERE pc.category_id IN ".$this->posted_categories." ";
 		}
 		$sql .= "ORDER BY pf.product_id ASC, fg.filter_group_id ASC, pf.filter_id ASC";
 		$query = $this->db->query( $sql );
@@ -8033,7 +8583,7 @@ class ModelToolExportImport extends Model {
 
 
 	protected function populateCustomersWorksheet( &$worksheet, &$box_format, &$text_format, $offset=null, $rows=null, &$min_id=null, &$max_id=null ) {
-		// Some fields are only available in newer Opencart versions
+		// Some fields are only available in certain Opencart versions
 		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'custom_field'";
 		$query = $this->db->query( $sql );
 		$exist_custom_field = ($query->num_rows > 0) ? true : false;
@@ -8049,6 +8599,9 @@ class ModelToolExportImport extends Model {
 		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'code'";
 		$query = $this->db->query( $sql );
 		$exist_code = ($query->num_rows > 0) ? true : false;
+		$sql = "SHOW COLUMNS FROM `".DB_PREFIX."customer` LIKE 'approved'";
+		$query = $this->db->query( $sql );
+		$exist_approved = ($query->num_rows > 0) ? true : false;
 
 		// Set the column widths
 		$j = 0;
@@ -8072,7 +8625,9 @@ class ModelToolExportImport extends Model {
 		}
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('ip'),15)+1);
 		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('status'),5)+1);
-		$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('approved'),5)+1);
+		if ($exist_approved) {
+			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('approved'),5)+1);
+		}
 		if ($exist_safe) {
 			$worksheet->getColumnDimensionByColumn($j++)->setWidth(max(strlen('safe'),5)+1);
 		}
@@ -8121,7 +8676,9 @@ class ModelToolExportImport extends Model {
 		$styles[$j] = &$text_format;
 		$data[$j++] = 'ip';
 		$data[$j++] = 'status';
-		$data[$j++] = 'approved';
+		if ($exist_approved) {
+			$data[$j++] = 'approved';
+		}
 		if ($exist_safe) {
 			$data[$j++] = 'safe';
 		}
@@ -8168,7 +8725,9 @@ class ModelToolExportImport extends Model {
 			}
 			$data[$j++] = $row['ip'];
 			$data[$j++] = ($row['status']==0) ? 'false' : 'true';
-			$data[$j++] = ($row['approved']==0) ? 'false' : 'true';
+			if ($exist_approved) {
+				$data[$j++] = ($row['approved']==0) ? 'false' : 'true';
+			}
 			if ($exist_safe) {
 				$data[$j++] = ($row['safe']==0) ? 'false' : 'true';
 			}
@@ -8351,7 +8910,15 @@ class ModelToolExportImport extends Model {
 
 
 	public function getCountProduct() {
-		$query = $this->db->query( "SELECT COUNT(product_id) as count_product FROM `".DB_PREFIX."product`" );
+		$sql  = "SELECT COUNT(DISTINCT p.product_id) as count_product ";
+		$sql .= "FROM `".DB_PREFIX."product` p ";
+		$posted_categories = $this->getPostedCategories();
+		if ($posted_categories) {
+			$sql .= "LEFT JOIN `".DB_PREFIX."product_to_category` pc ON pc.product_id=p.product_id ";
+			$sql .= "WHERE pc.category_id IN $posted_categories ";
+		}
+		
+		$query = $this->db->query( $sql );
 		if (isset($query->row['count_product'])) {
 			$count = $query->row['count_product'];
 		} else {
@@ -8434,9 +9001,10 @@ class ModelToolExportImport extends Model {
 		set_error_handler('error_handler_for_export_import',E_ALL);
 		register_shutdown_function('fatal_error_shutdown_handler_for_export_import');
 
-		// Use the PHPExcel package from http://phpexcel.codeplex.com/
+		// Use the PHPExcel package from https://github.com/PHPOffice/PHPExcel
 		$cwd = getcwd();
-		chdir( DIR_SYSTEM.'PHPExcel' );
+		$dir = (strcmp(VERSION,'3.0.0.0')>=0) ? 'library/export_import' : 'PHPExcel';
+		chdir( DIR_SYSTEM.$dir );
 		require_once( 'Classes/PHPExcel.php' );
 		PHPExcel_Cell::setValueBinder( new PHPExcel_Cell_ExportImportValueBinder() );
 		chdir( $cwd );
@@ -8450,6 +9018,8 @@ class ModelToolExportImport extends Model {
 			$cacheSettings = array( 'memoryCacheSize'  => '16MB' );  
 			PHPExcel_Settings::setCacheStorageMethod($cacheMethod, $cacheSettings);  
 		}
+
+		$this->posted_categories = $this->getPostedCategories();
 
 		try {
 			// set appropriate timeout limit
@@ -8544,6 +9114,16 @@ class ModelToolExportImport extends Model {
 						$this->populateCategoryFiltersWorksheet( $worksheet, $languages, $default_language_id, $box_format, $text_format, $min_id, $max_id );
 						$worksheet->freezePaneByColumnAndRow( 1, 2 );
 					}
+
+					// creating the CategorySEOKeywords worksheet
+					if ($this->use_table_seo_url) {
+						$workbook->createSheet();
+						$workbook->setActiveSheetIndex($worksheet_index++);
+						$worksheet = $workbook->getActiveSheet();
+						$worksheet->setTitle( 'CategorySEOKeywords' );
+						$this->populateCategorySEOKeywordsWorksheet( $worksheet, $languages, $box_format, $text_format, $min_id, $max_id );
+						$worksheet->freezePaneByColumnAndRow( 1, 2 );
+					}
 					break;
 
 				case 'p':
@@ -8617,6 +9197,16 @@ class ModelToolExportImport extends Model {
 						$worksheet = $workbook->getActiveSheet();
 						$worksheet->setTitle( 'ProductFilters' );
 						$this->populateProductFiltersWorksheet( $worksheet, $languages, $default_language_id, $box_format, $text_format, $min_id, $max_id );
+						$worksheet->freezePaneByColumnAndRow( 1, 2 );
+					}
+
+					// creating the ProductSEOKeywords worksheet
+					if ($this->use_table_seo_url) {
+						$workbook->createSheet();
+						$workbook->setActiveSheetIndex($worksheet_index++);
+						$worksheet = $workbook->getActiveSheet();
+						$worksheet->setTitle( 'ProductSEOKeywords' );
+						$this->populateProductSEOKeywordsWorksheet( $worksheet, $languages, $box_format, $text_format, $min_id, $max_id );
 						$worksheet->freezePaneByColumnAndRow( 1, 2 );
 					}
 					break;
@@ -8806,7 +9396,7 @@ class ModelToolExportImport extends Model {
 
 	public function getNotifications() {
 		/* $language_code = $this->config->get( 'config_admin_language' );
-		$result = $this->curl_get_contents("http://www.mhccorp.com/index.php?route=information/message&type=tool_export_import_3_10&language_code=$language_code");
+		$result = $this->curl_get_contents("http://www.mhccorp.com/index.php?route=information/message&type=tool_export_import_3_20&language_code=$language_code");
 		if (stripos($result,'<html') !== false) {
 			return '';
 		}
@@ -8904,5 +9494,13 @@ class ModelToolExportImport extends Model {
 		}
 		return true;
 	}
+
 }
+
+
+if (version_compare(VERSION,'3.0','>=')) {
+	class ModelExtensionExportImport extends ModelToolExportImport {
+	}
+}
+
 ?>
